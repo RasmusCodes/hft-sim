@@ -3,9 +3,10 @@
 # or the mutation cannot change behaviour (an "equivalent mutant"; docs/TESTING.md explains the
 # two known ones).
 #
-# Usage (from anywhere):  powershell -File tools\mutation_test.ps1 [-Only lob|sim|agents|mm|metrics|all] [-Ids A13,S02] [-Scratch <dir>]
+# Usage (from anywhere):  powershell -File tools\mutation_test.ps1 [-Only lob|sim|agents|mm|metrics|data|all] [-Ids A13,S02] [-Scratch <dir>]
 # About an hour for all; nothing in the repository is modified. `mm` mutants run the agents suite;
-# `metrics` mutants run the analysis suite and the agents' metrics tests (ledger identity, races).
+# `metrics` mutants run the analysis suite and the agents' metrics tests (ledger identity, races);
+# `data` mutants run the data suite and the simulated-day tests.
 param(
   [ValidateSet('all', 'lob', 'sim', 'agents', 'mm', 'metrics', 'data')][string]$Only = 'all',
   [string[]]$Ids = @(),
@@ -13,6 +14,8 @@ param(
 )
 
 $ErrorActionPreference = 'Continue'
+# `powershell -File` passes "-Ids A13,S02" as one string, so split it here.
+$Ids = @($Ids | ForEach-Object { $_ -split ',' } | ForEach-Object { $_.Trim() } | Where-Object { $_ })
 $src = Split-Path -Parent $PSScriptRoot
 $ws  = Join-Path $Scratch 'ws'
 New-Item -ItemType Directory -Force (Join-Path $ws 'crates') | Out-Null
@@ -26,7 +29,7 @@ $AE = 'crates\agents\src\execution.rs'; $AL = 'crates\agents\src\latency_arb.rs'
 $AN = 'crates\agents\src\noise.rs'; $AY = 'crates\analysis\src\lib.rs'
 $BM = 'crates\agents\src\mm\models.rs'; $BE = 'crates\agents\src\mm\estimators.rs'; $BS = 'crates\agents\src\mm\strategy.rs'
 $BA = 'crates\agents\src\mm\agent.rs'; $MT = 'crates\analysis\src\metrics.rs'
-$DL = 'crates\data\src\lobster.rs'; $DR = 'crates\data\src\replay.rs'; $D3 = 'crates\data\src\l3.rs'
+$DL = 'crates\data\src\lobster.rs'; $DR = 'crates\data\src\replay.rs'; $D3 = 'crates\data\src\l3.rs'; $DI = 'crates\data\src\itch.rs'
 # id, package (whose tests run), file, original text, mutated text, description
 $mutants = @(
   @('M01', 'lob', $E, 'if price == old_price && new_leaves <= old_leaves {', 'if price == old_price && new_leaves < old_leaves {', 'modify to the same size loses priority'),
@@ -147,7 +150,17 @@ $mutants = @(
   @('L09', 'data', $D3, 'ended = events[j].ts_us;', 'ended = t;', 'offset end reported as its start'),
   @('L10', 'data', $D3, '=> -neg_bid >= ask,', '=> -neg_bid > ask,', 'a locked book is not counted as crossed'),
   @('L11', 'data', $D3, 'is_some_and(|f| id > f));', 'is_some_and(|f| id < f));', 'revealed-id check points the wrong way'),
-  @('L12', 'data', $D3, 'Some(&(_, op, _)) if op != p => d.price.push((id, op, p)),', 'Some(&(_, op, _)) if op != p && false => d.price.push((id, op, p)),', 'price differences not classified')
+  @('L12', 'data', $D3, 'Some(&(_, op, _)) if op != p => d.price.push((id, op, p)),', 'Some(&(_, op, _)) if op != p && false => d.price.push((id, op, p)),', 'price differences not classified'),
+  @('I01', 'data', $DI, 'stock: stock(&b[24..32]), price: u32_at(32) },', 'stock: stock(&b[24..32]), price: u32_at(28) },', 'ITCH add price read 4 bytes early'),
+  @('I02', 'data', $DI, 'b''E'' => 31,', 'b''E'' => 30,', 'ITCH execution length one byte short'),
+  @('I03', 'data', $DI, 'books.entry(o.locate).or_default().change(o.side, o.price, -i64::from(o.shares));', 'books.entry(o.locate).or_default().change(o.side, o.price, 0);', 'a delete leaves its shares in the book'),
+  @('I04', 'data', $DI, 'Some(&f) if f != oref => {', 'Some(&f) if f == oref => {', 'arrival-order check flags executions at the front'),
+  @('I05', 'data', $DI, '(Some(b), Some(a)) if b >= a)', '(Some(b), Some(a)) if b > a)', 'a locked ITCH book is not counted as crossed'),
+  @('I06', 'data', $DI, 'origin: o.origin, how,', 'origin: c.messages, how,', 'a replacement forgets its original order''s arrival'),
+  @('I07', 'data', $DI, 'kind: Kind::ExecuteVisible, order_id: oref as i64, size: i64::from(take), price: i64::from(o.price),', 'kind: Kind::ExecuteVisible, order_id: oref as i64, size: i64::from(take), price: i64::from(px),', 'an execution with a price is exported at its printed price'),
+  @('I08', 'data', $DI, 'c.locate_mismatches += u64::from(o.locate != rec.locate);', 'c.locate_mismatches += u64::from(o.locate != o.locate);', 'an execution under another stock is not flagged'),
+  @('I09', 'data', $DI, 'c.out_of_order += u64::from(rec.ts_ns < last_ts);', 'c.out_of_order += u64::from(rec.ts_ns < c.first_ns);', 'timestamps compared with the first, not the latest'),
+  @('I10', 'data', $DI, 'if orders.insert(oref, order).is_some() {', 'if orders.insert(oref, order).is_some() && false {', 'duplicate order references never counted')
 )
 
 $summary = @()
@@ -193,5 +206,6 @@ foreach ($m in $mutants) {
   $summary += ('{0}  {1,-13} {2}  [{3} failing: {4}]' -f $id, $status, $what, @($failing).Count, (($failing | Select-Object -First 3) -join ', '))
   Write-Host $summary[-1]
 }
+if ($summary.Count -eq 0) { Write-Warning "No mutant matches -Only $Only -Ids $($Ids -join ',')"; exit 1 }
 $summary | Out-File (Join-Path $Scratch 'summary.txt') -Encoding utf8
 "`nSummary written to $(Join-Path $Scratch 'summary.txt')"

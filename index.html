@@ -26,8 +26,8 @@ description: A deterministic exchange, a latency-aware market simulator and a re
 <section class="block" aria-label="Key numbers">
   <div class="stats">
     <div class="stat"><div class="num">8.6 M/s</div><div class="label">messages through the matching engine with ~1,000 resting orders (2.4 M/s with ~190,000)</div></div>
-    <div class="stat"><div class="num">205 + 23</div><div class="label">Rust and Python tests passing, with no compiler warnings</div></div>
-    <div class="stat"><div class="num">117 / 119</div><div class="label">deliberately planted bugs caught by the tests; the other 2 proven unobservable</div></div>
+    <div class="stat"><div class="num">211 + 25</div><div class="label">Rust and Python tests passing, with no compiler warnings</div></div>
+    <div class="stat"><div class="num">127 / 129</div><div class="label">deliberately planted bugs caught by the tests; the other 2 proven unobservable</div></div>
     <div class="stat"><div class="num">1,136 / 1,136</div><div class="label">real Bitstamp order-level snapshots reproduced by the book rebuild</div></div>
   </div>
 </section>
@@ -91,9 +91,10 @@ description: A deterministic exchange, a latency-aware market simulator and a re
     </div>
     <div class="card">
       <h3>Historical data</h3>
-      <p>A LOBSTER adapter; real order-level data recorded from Bitstamp's public feed and checked
-      order by order against the exchange's own snapshots; a conservative replay fill model checked
-      against real fills.</p>
+      <p>A LOBSTER adapter and a Nasdaq ITCH 5.0 reader. Real order-level data recorded from
+      Bitstamp's public feed, checked order by order against the exchange's own snapshots; a full
+      Nasdaq BX equity day rebuilt without an inconsistency; a replay fill model checked against
+      real fills on both.</p>
       <a class="more" href="docs/HISTORICAL_DATA.html">Historical data →</a>
     </div>
   </div>
@@ -122,14 +123,15 @@ description: A deterministic exchange, a latency-aware market simulator and a re
     </div>
     <div class="panel">
       <p class="tag">Historical stage · phase 5</p>
-      <h3>19 minutes of real Bitstamp BTC/USD order-level data</h3>
+      <h3>Real order-level data: Bitstamp BTC/USD and a Nasdaq BX equity day</h3>
       <ul>
-        <li>The book rebuilt from 365,180 order events reproduces all 1,136 of the exchange's own order-level snapshots. Broken copies of the data are caught down to one satoshi on one order.</li>
-        <li>The replay fill model was run leave-one-out on 172,862 real resting orders. In four variants it never filled an order the exchange left unfilled, nor one earlier or for more.</li>
-        <li>With the takers' published orders, and history rebuilt without each order, it recovers 292 of 298 real fills at the right millisecond and 99.6% of the volume.</li>
+        <li>Bitstamp, 19 minutes: the book rebuilt from 365,180 order events reproduces all 1,136 of the exchange's own order-level snapshots. Broken copies of the data are caught down to one satoshi on one order.</li>
+        <li>Run leave-one-out on 172,862 real resting orders, the replay fill model never filled an order the exchange left unfilled, nor one earlier or for more. With the takers' published orders, and history rebuilt without each order, it recovers 292 of 298 real fills at the right millisecond and 99.6% of the volume.</li>
         <li>The same check found an optimistic trade-through rule in the model, and it was fixed.</li>
+        <li>Nasdaq BX, 30 December 2019: 29.2 million ITCH messages for 8,906 stocks rebuild without a single inconsistency. For the 8 most-traded stocks, the best 10 levels agree with an independent rebuild after all 1.6 million book changes.</li>
+        <li>On BX, 0.2% of executions were not of the oldest order at their price, so there the replay model is not strictly conservative: it filled 539 of about 711,000 orders the exchange never filled (0.08%).</li>
       </ul>
-      <p class="note">One venue and one window; nothing here is shown about equities yet. <a href="docs/HISTORICAL_DATA.html">Read the details →</a></p>
+      <p class="note">Two venues, one window each. <a href="docs/HISTORICAL_DATA.html">Read the details →</a></p>
     </div>
   </div>
 </section>
@@ -139,10 +141,10 @@ description: A deterministic exchange, a latency-aware market simulator and a re
   <ul class="checks">
     <li><b>Hand-computed scenarios.</b> 52 rulebook cases with exact expected events.</li>
     <li><b>Differential fuzzing.</b> The engine against an independent naive implementation, cross-checked after every command.</li>
-    <li><b>Mutation testing.</b> Bugs planted one at a time in every crate. The tests caught 117 of 119; the other 2 cannot change behaviour.</li>
+    <li><b>Mutation testing.</b> Bugs planted one at a time in every crate. The tests caught 127 of 129; the other 2 cannot change behaviour.</li>
     <li><b>Reproducibility.</b> Golden digests of the event stream: the same seed gives the same run, bit for bit.</li>
     <li><b>Accounting identities.</b> Every agent's PnL decomposition equals its exchange ledger to the last fee unit.</li>
-    <li><b>Ground truth.</b> The replay fill model is checked against the exchange's own fills in the simulator, and against real orders on Bitstamp.</li>
+    <li><b>Ground truth.</b> The replay fill model is checked against the exchange's own fills in the simulator, and against real orders on Bitstamp and Nasdaq BX.</li>
   </ul>
 </section>
 
@@ -159,7 +161,7 @@ description: A deterministic exchange, a latency-aware market simulator and a re
     <a href="docs/METRICS.html"><b>METRICS</b><span>Metric definitions, sources, choices and verification</span></a>
     <a href="docs/RESEARCH_RESULTS.html"><b>RESEARCH_RESULTS</b><span>What the eight research reports show (simulation only)</span></a>
     <a href="reports/"><b>reports/</b><span>The eight generated reports, with the manifests that reproduce every run</span></a>
-    <a href="docs/HISTORICAL_DATA.html"><b>HISTORICAL_DATA</b><span>LOBSTER, the Bitstamp recording and its checks, the replay fill model</span></a>
+    <a href="docs/HISTORICAL_DATA.html"><b>HISTORICAL_DATA</b><span>LOBSTER, the Bitstamp recording, a Nasdaq ITCH day, their checks and the replay fill model</span></a>
     <a href="docs/RESEARCH_SURVEY.html"><b>RESEARCH_SURVEY</b><span>Matching-engine and market-making literature, with verification tags</span></a>
     <a href="docs/RISKS.html"><b>RISKS</b><span>Technical and research risk register</span></a>
     <a href="docs/TESTING.html"><b>TESTING</b><span>Correctness evidence, phase by phase</span></a>

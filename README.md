@@ -47,9 +47,14 @@ so far:
     * Adding a taker-remainder rule (Bitstamp publishes takers' orders), scored against history
       rebuilt without each order, finds 292 of 298 and 99.6% of the volume.
     * The check also found and fixed an optimistic trade-through rule.
+  * **a real equity day from Nasdaq's ITCH 5.0 feed** (Nasdaq BX, 2019-12-30: 29.2 million
+    messages, 8,906 stocks). Every consistency check passes, and an independent rebuild agrees
+    after 1.6 million messages. 0.2% of BX's executions break arrival order (cause not
+    identified), so there the replay fill model is nearly, not strictly, conservative: 0.08% false
+    fills on 801,154 orders.
 
   No real LOBSTER file has been validated: LOBSTER's samples now need an academic application.
-  Hybrid replay and the ITCH/Databento adapters are not built
+  Hybrid replay and the Databento adapter are not built
   ([roadmap](docs/ARCHITECTURE.md#14-roadmap)).
 
 > Results from this simulator are simulation results. No strategy will be described as profitable
@@ -66,7 +71,8 @@ reports with the manifests that reproduce every run. It does not hold:
 * any market data. The Bitstamp recording behind
   [docs/HISTORICAL_DATA.md](docs/HISTORICAL_DATA.md) §6 is not redistributed: Bitstamp's terms
   for its public feed were not checked. `python -I -m hftsim.bitstamp record` records a fresh
-  one, and the same commands then rerun every check on it.
+  one, and the same commands then rerun every check on it. The Nasdaq ITCH day of §7 is
+  Nasdaq's public sample file, to be downloaded from Nasdaq.
 
 ## What the exchange core does
 
@@ -201,8 +207,8 @@ Generated reports replace the proposed notebooks, and Python-written agents are 
 
 ## Evidence
 
-205 Rust tests pass (`cargo test --offline`), plus one slow acceptance test run with `--ignored`,
-and there are no compiler warnings. 23 Python tests pass (`python -m unittest discover -s tests`
+211 Rust tests pass (`cargo test --offline`), plus one slow acceptance test run with `--ignored`,
+and there are no compiler warnings. 25 Python tests pass (`python -m unittest discover -s tests`
 in `python/`). Four of them need the native extension and pyarrow and are skipped without them.
 Details in [docs/TESTING.md](docs/TESTING.md) and [docs/BENCHMARKS.md](docs/BENCHMARKS.md).
 
@@ -261,10 +267,16 @@ Details in [docs/TESTING.md](docs/TESTING.md) and [docs/BENCHMARKS.md](docs/BENC
   * the replay fill model, run leave-one-out on 172,862 real resting orders in four variants,
     filled none of the 172,564 that never traded, and no order earlier or for more than it
     really filled;
-  * mutation testing: all 34 planted data bugs caught. 22 are in the LOBSTER reader and the
+  * a Nasdaq BX ITCH day (29.2 million messages): each message type's length matches its layout,
+    and the book rebuild finds no unknown or reused reference, stock mismatch, oversize execution,
+    backward timestamp or crossed book. The best 10 levels agree with LOBSTER's independent
+    rebuild after 1,608,422 messages;
+  * mutation testing: all 44 planted data bugs caught. 22 are in the LOBSTER reader and the
     replay model (including its leave-one-out check, taker-remainder rule and counterfactual),
-    two of them only after the test gaps they exposed were closed. The other 12 are in the
-    order-level check, one of them only by a test added while the mutant was written.
+    two of them only after the test gaps they exposed were closed. 12 are in the order-level
+    check, one of them only by a test added while the mutant was written. 10 are in the ITCH
+    reader, 4 of them caught only by a test written first, because no earlier test made those
+    inconsistencies happen.
 * **Engine performance** (Ryzen AI 7 PRO 350 laptop):
   * about 8.6 M messages/s with ~1,000 resting orders and 2.4 M messages/s with ~190,000;
   * median 120–420 ns per message, p99 0.27–1.1 µs;
@@ -359,7 +371,7 @@ $env:VIRTUAL_ENV = "$PWD\.venv"; .\.venv\Scripts\maturin develop --release
 
 Historical data: write a simulated day as LOBSTER files, check a LOBSTER day against its own
 snapshots, and test the replay fill model against the exchange (examples in
-[docs/HISTORICAL_DATA.md](docs/HISTORICAL_DATA.md) §8):
+[docs/HISTORICAL_DATA.md](docs/HISTORICAL_DATA.md) §9):
 
 ```bash
 target/release/hftsim replay-check --probes 6 --probe-interval-ms 300 --seed 2026 --secs 120 --mm 7 --informed 10
@@ -385,6 +397,14 @@ Then check the replay fill model against the recording's real fills (leave-one-o
 python -I -m hftsim.bitstamp replay ../data/bitstamp/btcusd-run
 ```
 
+A Nasdaq ITCH 5.0 sample day (download it yourself from emi.nasdaq.com/ITCH/; the BX file of
+2019-12-30 is 391 MB): every stock's book and checks, then the replay check on the 8 most-traded
+stocks (about 3 minutes):
+
+```bash
+python -I -m hftsim.itch check ../data/itch/20191230-bx/20191230.BX_ITCH_50.gz --replay 8
+```
+
 Scaled fuzzing and mutation testing (PowerShell):
 
 ```powershell
@@ -395,8 +415,8 @@ $env:LOB_FUZZ_SEEDS=1500; $env:LOB_FUZZ_STEPS=4000; cargo test --release --offli
 powershell -File tools\mutation_test.ps1
 ```
 
-(About an hour for all 119 mutants; `-Only lob|sim|agents|mm|metrics|data` or `-Ids A13` for a
-subset.)
+(About an hour for all 129 mutants; `-Only lob|sim|agents|mm|metrics|data` or `-Ids A13,S02` for
+a subset.)
 
 ## Layout
 
@@ -442,19 +462,21 @@ hft-sim/
 ├── crates/agents/tests/metrics.rs  decomposition = ledger for every agent; a race end to end
 ├── crates/data/                  historical data: lobster.rs (read, write, rebuild, validate),
 │                                 l3.rs (order-level rebuild checked against order-level snapshots),
+│                                 itch.rs (Nasdaq ITCH 5.0: reader, book, checks, LOBSTER form),
 │                                 provenance.rs, replay.rs (FIFO queue fill model)
 ├── crates/runner/                library + `hftsim` binary: one market per run → JSON with manifest;
 │                                 export.rs: event log and top of book in Arrow layout;
-│                                 lobster-export, lobster-check, l3-check, replay-check and
-│                                 replay-truth commands;
+│                                 lobster-export, lobster-check, l3-check, replay-check,
+│                                 replay-truth and itch-check commands;
 │                                 tests/lobster.rs: simulated days through LOBSTER files, replay check
 ├── python/hftsim/                runner.py (Scenario, run_many, verify), stats.py, report.py,
 │                                 research.py (the eight experiments), arrow.py and export.py
 │                                 (pyarrow tables, Parquet; need the native extension),
 │                                 lobster.py (LOBSTER export/check, replay check),
 │                                 bitstamp.py (record, convert, check, break test, crossings,
-│                                 LOBSTER export, replay against real fills)
-├── data/bitstamp/                recorded Bitstamp runs: raw messages as received + derived/ (checks)
+│                                 LOBSTER export, replay against real fills), itch.py (ITCH day check)
+├── data/                         not in the repository: recorded Bitstamp runs, downloaded ITCH days,
+│                                 each with a derived/ folder of check reports
 ├── python/native/                PyO3 extension hftsim._native (own Cargo workspace; maturin)
 ├── python/pyproject.toml         maturin build of hftsim with its extension
 ├── python/tests/                 statistics by hand, Python defaults = binary defaults, reproducibility,
@@ -470,7 +492,7 @@ hft-sim/
     ├── MARKET_MAKING.md          formula register and verification, the ladder, the agent, first runs
     ├── METRICS.md                metric definitions, sources, choices, verification
     ├── HISTORICAL_DATA.md        LOBSTER format, reconstruction, provenance, replay fill model,
-    │                             Bitstamp recording and its check against the exchange's snapshots
+    │                             the Bitstamp recording and the Nasdaq BX ITCH day, with their checks
     ├── RESEARCH_RESULTS.md       what the eight research reports show (simulation only)
     ├── RESEARCH_SURVEY.md        matching engines and market-making literature, verification tags
     ├── RISKS.md                  technical risk register

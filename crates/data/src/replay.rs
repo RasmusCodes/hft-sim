@@ -372,7 +372,12 @@ pub struct LooOptions<'a> {
     /// within the taker's limit, and what is left stays with the taker as unfilled remainder.
     /// Never-filled orders need none: removing an order nothing traded with changes nothing else.
     /// Assumes no one would have acted differently, the same assumption replay itself makes.
+    /// Where the taker is unknown (feeds without taker orders, such as ITCH), only the orders
+    /// behind it at its price are reachable for certain, so the rest stays unattributed.
     pub counterfactual: bool,
+    /// If not 0, compare only an evenly spaced sample of this many orders that really filled
+    /// (by submission order), so that variants can be scored on the same orders cheaply.
+    pub sample_filled: usize,
 }
 
 /// Volume the counterfactual moved, over all filled orders.
@@ -384,7 +389,8 @@ pub struct Rematched {
     pub deeper: i64,
     /// Left with the taker, unfilled.
     pub leftover: i64,
-    /// Not re-matched: the taker is unknown.
+    /// Left over where the taker is unknown: re-matched within its price level only, the rest
+    /// cannot be placed.
     pub unattributed: i64,
 }
 
@@ -413,46 +419,47 @@ fn counterfactual_stream(messages: &[Message], target: i64, info: &TakerInfo, re
                 target_seq = i;
             } else if m.kind == Kind::ExecuteVisible {
                 let mut left = m.size;
-                match info.arrivals.get(&taker) {
-                    None => re.unattributed += left,
-                    Some(&(ts, side, limit)) => {
-                        // The orders the taker would have reached next, in price-time priority.
-                        let mut next: Vec<(i64, usize, i64)> = live
-                            .iter()
-                            .filter(|(_, l)| {
-                                l.side == m.side
-                                    && ((l.price == m.price && l.seq > target_seq)
-                                        || match m.side {
-                                            Side::Buy => l.price < m.price && l.price >= limit,
-                                            Side::Sell => l.price > m.price && l.price <= limit,
-                                        })
-                            })
-                            .map(|(&id, l)| (if m.side == Side::Buy { -l.price } else { l.price }, l.seq, id))
-                            .collect();
-                        next.sort_unstable();
-                        for (_, _, id) in next {
-                            if left == 0 {
-                                break;
-                            }
-                            let l = live.get_mut(&id).expect("listed above");
-                            let take = left.min(l.left);
-                            out.push(Message { ts_ns: m.ts_ns, kind: Kind::ExecuteVisible, order_id: id, size: take, price: l.price, side: l.side });
-                            if l.price == m.price {
-                                re.behind += take;
-                            } else {
-                                re.deeper += take;
-                            }
-                            l.left -= take;
-                            left -= take;
-                            if l.left == 0 {
-                                live.remove(&id);
-                            }
-                        }
-                        if left > 0 {
-                            re.leftover += left;
-                            extra.push(TakerRemainder { ts_ns: ts, id: taker, side, limit, available: left });
-                        }
+                let arrival = info.arrivals.get(&taker).copied();
+                // The orders the taker would have reached next, in price-time priority: behind
+                // the target at its price, then (if its limit is known) worse prices within it.
+                let mut next: Vec<(i64, usize, i64)> = live
+                    .iter()
+                    .filter(|(_, l)| {
+                        l.side == m.side
+                            && ((l.price == m.price && l.seq > target_seq)
+                                || arrival.is_some_and(|(_, _, limit)| match m.side {
+                                    Side::Buy => l.price < m.price && l.price >= limit,
+                                    Side::Sell => l.price > m.price && l.price <= limit,
+                                }))
+                    })
+                    .map(|(&id, l)| (if m.side == Side::Buy { -l.price } else { l.price }, l.seq, id))
+                    .collect();
+                next.sort_unstable();
+                for (_, _, id) in next {
+                    if left == 0 {
+                        break;
                     }
+                    let l = live.get_mut(&id).expect("listed above");
+                    let take = left.min(l.left);
+                    out.push(Message { ts_ns: m.ts_ns, kind: Kind::ExecuteVisible, order_id: id, size: take, price: l.price, side: l.side });
+                    if l.price == m.price {
+                        re.behind += take;
+                    } else {
+                        re.deeper += take;
+                    }
+                    l.left -= take;
+                    left -= take;
+                    if l.left == 0 {
+                        live.remove(&id);
+                    }
+                }
+                match (left > 0, arrival) {
+                    (true, Some((ts, side, limit))) => {
+                        re.leftover += left;
+                        extra.push(TakerRemainder { ts_ns: ts, id: taker, side, limit, available: left });
+                    }
+                    (true, None) => re.unattributed += left,
+                    _ => {}
                 }
             }
             continue;
@@ -560,6 +567,11 @@ pub fn leave_one_out_with(messages: &[Message], from_ns: i64, opt: &LooOptions) 
             cases.push((id, PassiveOrder { entry_ns: r.entry_ns, side: r.side, price: r.price, size: r.size, expire_ns, own_order_id: Some(id) }));
         }
     }
+    if opt.sample_filled > 0 {
+        let filled: Vec<(i64, PassiveOrder)> = cases.into_iter().filter(|(id, _)| !real[id].fills.is_empty()).collect();
+        let step = filled.len().div_ceil(opt.sample_filled).max(1);
+        cases = filled.into_iter().step_by(step).collect();
+    }
     let copies: Vec<PassiveOrder> = cases.iter().map(|c| c.1).collect();
     let base: &[TakerRemainder] = match opt.takers {
         Some(info) if v.taker_rule => &info.remainders,
@@ -646,6 +658,37 @@ pub fn leave_one_out_with(messages: &[Message], from_ns: i64, opt: &LooOptions) 
 }
 
 impl LeaveOneOut {
+    /// Add another check's counts to this one (to total several stocks).
+    pub fn absorb(&mut self, o: &LeaveOneOut) {
+        self.taker_rule |= o.taker_rule;
+        self.counterfactual |= o.counterfactual;
+        let (r, s) = (&mut self.rematched, o.rematched);
+        (r.behind, r.deeper, r.leftover, r.unattributed) = (r.behind + s.behind, r.deeper + s.deeper, r.leftover + s.leftover, r.unattributed + s.unattributed);
+        for k in 0..3 {
+            self.volume_by_reason[k] += o.volume_by_reason[k];
+        }
+        self.orders += o.orders;
+        self.before_from += o.before_from;
+        self.gone_within_entry_stamp += o.gone_within_entry_stamp;
+        self.marketable += o.marketable;
+        self.both += o.both;
+        self.exchange_only += o.exchange_only;
+        self.model_only += o.model_only;
+        self.neither += o.neither;
+        self.earlier += o.earlier;
+        self.same_stamp += o.same_stamp;
+        self.later += o.later;
+        self.lags_ns.extend_from_slice(&o.lags_ns);
+        self.lags_ns.sort_unstable();
+        self.overfilled += o.overfilled;
+        self.real_volume += o.real_volume;
+        self.model_volume += o.model_volume;
+        self.queue_overstated += o.queue_overstated;
+        for (mine, theirs) in [(&mut self.examples, &o.examples), (&mut self.missed, &o.missed)] {
+            mine.extend(theirs.iter().take(10usize.saturating_sub(mine.len())).cloned());
+        }
+    }
+
     /// As a JSON object.
     pub fn to_json(&self) -> String {
         let lags = if self.lags_ns.is_empty() {
@@ -803,12 +846,18 @@ mod tests {
         let info = TakerInfo { remainders: vec![], arrivals: HashMap::from([(70, (5, Side::Sell, p - 100))]), fill_takers: vec![70] };
         let naive = leave_one_out(&ms, 0);
         assert_eq!((naive.orders, naive.exchange_only, naive.neither), (4, 1, 3));
-        let cf = leave_one_out_with(&ms, 0, &LooOptions { takers: Some(&info), taker_rule: false, counterfactual: true });
+        let cf = leave_one_out_with(&ms, 0, &LooOptions { takers: Some(&info), counterfactual: true, ..LooOptions::default() });
         assert_eq!(cf.rematched, Rematched { behind: 4, deeper: 5, leftover: 1, unattributed: 0 }, "S lies beyond the taker's limit");
         assert_eq!((cf.both, cf.same_stamp, cf.neither, cf.model_volume, cf.volume_by_reason), (1, 1, 3, 9, [4, 5, 0]));
-        let full = leave_one_out_with(&ms, 0, &LooOptions { takers: Some(&info), taker_rule: true, counterfactual: true });
+        let full = leave_one_out_with(&ms, 0, &LooOptions { takers: Some(&info), taker_rule: true, counterfactual: true, sample_filled: 0 });
         assert_eq!((full.same_stamp, full.model_volume, full.volume_by_reason, full.overfilled), (1, 10, [4, 5, 1], 0), "the 1 left with the taker reaches O's copy");
         assert!(full.to_json().contains("\"rematched\":{\"behind\":4,\"deeper\":5,\"leftover\":1,\"unattributed\":0}"));
+        // A feed that names no taker (ITCH): only Q, behind O at its price, is reachable for
+        // certain; the other 6 cannot be placed. Sampling keeps only the order that filled.
+        let blind = TakerInfo { fill_takers: vec![0], ..TakerInfo::default() };
+        let within = leave_one_out_with(&ms, 0, &LooOptions { takers: Some(&blind), counterfactual: true, sample_filled: 1, ..LooOptions::default() });
+        assert_eq!(within.rematched, Rematched { behind: 4, deeper: 0, leftover: 0, unattributed: 6 });
+        assert_eq!((within.orders, within.same_stamp, within.model_volume), (1, 1, 4), "only the filled order is in the sample");
     }
 
     #[test]

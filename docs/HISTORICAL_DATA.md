@@ -11,9 +11,14 @@ replays hypothetical orders under an explicit queue model. The `hftsim` binary e
   order). None is unexplained. Deliberately broken copies of the data are caught, down to one
   satoshi on one order. This meets the phase-5 exit criterion ("reconstruction matches vendor
   snapshots") for one venue and one window.
+* **Real equity data: Nasdaq BX ITCH (§7).** One sample day (2019-12-30: 29.2 million messages,
+  8,906 stocks) passes every consistency check, and an independent rebuild agrees with it after
+  1.6 million messages. On it the replay fill model is nearly, not strictly, conservative: 0.08%
+  false fills. The cause is that 0.2% of BX's executions break arrival order, and why was not
+  identified.
 * **LOBSTER: built, never run on a real file.** The adapter, reconstruction, provenance and
   pure-replay fill model are tested only on simulated sessions written in LOBSTER's format.
-  LOBSTER no longer offers anonymous samples (§7).
+  LOBSTER no longer offers anonymous samples (§8).
 * **Replay fill model against real fills (§6).** Each of 172,862 resting Bitstamp orders was
   replayed through the stream without itself, under four variants. The model never filled an
   order the exchange left unfilled, nor one earlier or for more.
@@ -21,7 +26,7 @@ replays hypothetical orders under an explicit queue model. The `hftsim` binary e
   * With a taker-remainder rule (Bitstamp publishes takers' orders), and history rebuilt without
     each order, it finds 292 of 298 on time and 99.6% of the volume.
   * The check also exposed, and fixed, an optimistic trade-through rule.
-* **Not built:** ITCH 5.0, Databento and crypto L2 adapters, and hybrid replay.
+* **Not built:** Databento and crypto L2 adapters, and hybrid replay.
 
 > Results on historical data are a separate stage from simulation results. Every result built on
 > this crate carries its provenance and states the data level it rests on (ARCHITECTURE §10).
@@ -209,7 +214,7 @@ Uses:
 
 ## 6. Bitstamp: real order-level data, checked against the exchange's snapshots
 
-LOBSTER's sample now needs an academic e-mail, proof of purchase and staff approval (§7).
+LOBSTER's sample now needs an academic e-mail, proof of purchase and staff approval (§8).
 Bitstamp publishes order-level data without an account. Its WebSocket API v2 documentation was
 read ([V]):
 * `live_orders_btcusd`: every order's creation, change and deletion, with id, side, price,
@@ -449,23 +454,134 @@ It does not establish:
   and ITCH do not carry it, so on those feeds the conservative rules alone apply.
 * **Impact.** Replay still cannot show how the market would have reacted to an extra order.
 
-## 7. Not done yet
+## 7. Nasdaq ITCH 5.0: a real equity day
+
+Nasdaq publishes sample days of its TotalView-ITCH feeds without an account. The smallest was
+downloaded: Nasdaq BX, 2019-12-30 (`20191230.BX_ITCH_50.gz`, 390,561,039 bytes, 862,946,629
+decompressed). Its size matched the listing and gzip's CRC check passed. Nasdaq's checksum file
+beside it could not be fetched (the server answers 404).
+
+ITCH is the exchange's own order-level feed: every add, execution, cancellation, deletion and
+replacement, with nanosecond timestamps. The day starts with an empty book, so no order is unknown.
+It names no taker: an execution names only the resting order.
+
+### Reading it
+
+`crates/data/src/itch.rs` reads the binary file, in which each message is preceded by its length.
+The field layouts were written from memory of the ITCH 5.0 specification [M], because Nasdaq's
+specification page could not be loaded. The data checks them in two ways:
+* each message carries its own length, which is compared with the layout's;
+* wrong field offsets would show up as inconsistencies in the book rebuild.
+
+| Check | Result |
+|---|---|
+| Messages | 29,156,757, of 15 types |
+| Each type's length against the layout | all match |
+| Unknown types; malformed messages | 0; 0 |
+| Order references never added; added twice | 0; 0 |
+| Messages whose stock differs from their order's | 0 |
+| Executions or cancellations larger than the order | 0 |
+| Timestamps out of order | 0 |
+| Crossed or locked books, in any session | 0 |
+| Orders left at the end of the day | 0 |
+| Stocks in the directory; stocks traded | 8,906; 5,533 |
+
+* **Market hours** begin at 9:30:00.000140 and end at 16:00:00.000061, by the system events.
+* **Prices** decode plausibly for the date: SPY traded at $320.60–323.14, AMD at $44.68–46.15,
+  INTC at $59.38–60.01. That is a sanity check against memory of late-2019 prices [M], not a
+  verification.
+* **Volume.** BX ran no crosses that day. 58.8 million shares traded against displayed orders and
+  15.8 million against non-displayed ones.
+
+**Cross-check.** For the 8 most-traded stocks the day is also written in LOBSTER form and rebuilt
+by LOBSTER's own rebuilder (§2), an independent implementation. Their best 10 levels agree after
+every one of 1,608,422 book-changing messages: 0 mismatches.
+
+### Queue priority on BX
+
+Replay assumes price-time priority: at one price, orders fill in the order they arrived. The feed
+lets that be checked directly. For every visible execution, was the executed order the oldest at
+its level? Here a replacement counts as a new order.
+
+* **Oldest at its level:** 580,281 executions (99.79%).
+* **A newer order passing an older one** that stayed on the book: 1,244 executions (0.21%). Of
+  those, 1,143 were plain adds and 101 replacements.
+* **Neither obvious explanation fits.**
+  * If replacements kept the replaced order's place, they would explain 20 of the 1,244.
+  * The order passed over was an odd lot in only 195 of them.
+
+The cause was not identified. BX's rulebook was not checked; candidates are order types that
+restrict what they trade against, and self-trade prevention. Most of the examples are in
+volatility products (UVXY, VXX).
+
+### The replay fill model on equity orders
+
+`hftsim itch-check` runs the leave-one-out check of §6 on the 8 most-traded stocks: GDX, SQQQ, EWZ,
+AMD, SPY, UVXY, INTC and NIO. Because ITCH names no taker:
+* the taker-remainder rule does not apply;
+* the counterfactual can re-match a removed order's volume only to orders behind it at its own
+  price. Worse prices need the taker's limit.
+
+| Real outcome | Model | Orders |
+|---|---|---|
+| never filled | not filled | 710,431 |
+| never filled | **filled** | **539** (0.08%) |
+| filled | first fill **earlier** | **72** |
+| filled | first fill in the same nanosecond | 6,185 |
+| filled | first fill later: median 2.4 ms, p90 14 s | 81,985 |
+| filled | never filled | 1,942 |
+
+553 copies were filled for more than their original traded before being cancelled. The model
+eventually filled 5.71 million of the 6.04 million shares really traded (95%).
+
+* **Not strictly conservative here.** For an order that never traded to get a model fill, history
+  must execute an order behind the copy, or trade through its price, while the copy rests. Those
+  are the queue jumps above. UVXY alone accounts for 377 of the 539. On BX, strict FIFO is a 99.8%
+  approximation, and the model inherits the remaining 0.2%.
+* **Late, but the volume arrives.** Only 7% of first fills land in the right nanosecond, yet 95% of
+  the volume is eventually filled. Queues at a price are deeper than on Bitstamp, so later
+  executions of orders behind the copy reveal it: 4.26 million shares came that way and 1.46
+  million through trade-throughs.
+* **The counterfactual helps little without the taker.** It was run on a sample of 1,584 filled
+  orders, at most 200 per stock, evenly spaced. Only 13% of the removed orders' volume (11,599 of
+  90,743 shares) could be re-matched to orders behind them at the same price; the rest needs the
+  taker's limit. First fills in the same nanosecond rose from 130 to 160.
+
+### What this establishes, and what it does not
+
+It establishes:
+* the ITCH reader and book rebuild are consistent with the data in every check, and agree with an
+  independent rebuild;
+* on BX equities the replay model is nearly conservative but not strictly: 0.08% false fills,
+  caused by the 0.2% of executions that break arrival order.
+
+It does not establish:
+* **The specification.** The field layouts are confirmed by lengths and consistency, not by the
+  specification text.
+* **Other venues and days.** BX is a small Nasdaq venue, and this is one day.
+* **Why executions jump the queue.**
+* **Hidden orders and auctions.** Executions against non-displayed orders never fill a copy
+  (conservative), and BX ran no crosses that day.
+* **Vendor snapshots.** ITCH has none; it is the exchange's own feed. The phase-5 criterion
+  "reconstruction matches vendor snapshots" is met for equities only in this weaker sense:
+  consistency, plus agreement with an independent rebuild.
+
+## 8. Not done yet
 
 * **Real LOBSTER data.** Not validated. lobsterdata.com no longer offers anonymous samples: a
   sample needs an academic e-mail, proof of purchase and staff approval, or a conference trial
-  account. The phase-5 exit criterion is met on Bitstamp data
-  (§6), not on equities.
+  account. Vendor snapshots have been matched on Bitstamp data (§6); equities are checked through
+  ITCH (§7), which has no snapshots.
 * **Other adapters.** Not built:
-  * ITCH 5.0. Nasdaq publishes sample files without an account (the smallest, Nasdaq BX, is
-    391 MB). Field layouts are not yet verified (RESEARCH_SURVEY §E);
   * Databento MBO (needs an account);
   * crypto L2.
+* **The queue jumps on BX** (§7): their cause, and a replay rule that accounts for them.
 * **Hybrid replay** (ARCHITECTURE §10 mode b). Historical flow replayed into the engine as orders,
   so live agents' fills come from the matching engine itself. Not built.
 * **Queue models for L2-only data**, which must assume where cancellations sit in the queue. The
   probe check above is the harness to measure their error against ground truth.
 
-## 8. Commands
+## 9. Commands
 
 Write a simulated session as LOBSTER files:
 
@@ -512,6 +628,20 @@ with orders submitted before `--from-seconds` treated as its opening book:
 
 ```bash
 hftsim replay-truth derived/lobster_message.csv --from-seconds 4783.581000
+```
+
+Check an ITCH day (§7): decompress it, read every stock's book, cross-check the most-traded stocks
+against LOBSTER's rebuild and run the replay check on them. About 3 minutes for the BX day; the
+report lands in `derived/itch_check.json` beside the file:
+
+```bash
+python -I -m hftsim.itch check ../data/itch/20191230-bx/20191230.BX_ITCH_50.gz --replay 8
+```
+
+Or chosen stocks, on the decompressed file:
+
+```bash
+hftsim itch-check 20191230.BX_ITCH_50 --symbols SPY,AMD --sample 200
 ```
 
 `check` converts again whenever the raw files are newer than the converted ones or the converter

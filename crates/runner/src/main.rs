@@ -24,6 +24,8 @@ hftsim l3-check EVENTS SNAPSHOTS [--depth 100] [...]   rebuild an order-level fe
 hftsim replay-check [probe flags] [run flags]          replay fill model against the exchange's own fills
 hftsim replay-truth MESSAGE_FILE [--from-seconds S]    replay fill model against real orders in a LOBSTER message
                                                        file, leave-one-out (e.g. python -m hftsim.bitstamp replay)
+hftsim itch-check FILE [--replay 8] [--symbols A,B]    read a Nasdaq ITCH 5.0 day (decompressed): every stock's
+                                                       book and checks, then the replay check on the most-traded
     probe flags: --probes 4  --probe-interval-ms 500  --probe-life-ms 5000  --probe-lots 1
                  --probe-latency colocated|proximity|remote";
 
@@ -74,6 +76,86 @@ fn l3_check(args: &[String]) -> Result<String, String> {
     Ok(format!("{{\"provenance\":{},\"validation\":{}}}", p.to_json(), v.to_json()))
 }
 
+fn itch_check(args: &[String]) -> Result<String, String> {
+    use data::itch::read_file;
+    use data::provenance::{DataLevel, Provenance, file_info};
+    use data::replay::{LeaveOneOut, LooOptions, TakerInfo, leave_one_out, leave_one_out_with};
+    use std::collections::HashSet;
+    let usage = "usage: hftsim itch-check FILE [--replay 8] [--symbols A,B] [--levels 10] [--sample 200] [--source TEXT] [--date D] [--also FILE ...]";
+    let (path, rest) = args.split_first().ok_or(usage)?;
+    let (mut replay, mut levels, mut sample, mut symbols) = (8usize, 10usize, 200usize, Vec::<String>::new());
+    let (mut source, mut date, mut also) = ("Nasdaq TotalView-ITCH 5.0 file".to_string(), "unknown".to_string(), Vec::new());
+    let mut k = 0;
+    while k < rest.len() {
+        let val = rest.get(k + 1).ok_or_else(|| format!("{} needs a value\n{usage}", rest[k]))?;
+        let num = |v: &str, name: &str| v.parse::<usize>().map_err(|e| format!("{name}: {e}"));
+        match rest[k].as_str() {
+            "--replay" => replay = num(val, "--replay")?,
+            "--levels" => levels = num(val, "--levels")?,
+            "--sample" => sample = num(val, "--sample")?,
+            "--symbols" => symbols = val.split(',').map(|s| s.trim().to_string()).filter(|s| !s.is_empty()).collect(),
+            "--source" => source = val.clone(),
+            "--date" => date = val.clone(),
+            "--also" => also.push(val.clone()),
+            other => return Err(format!("unknown flag `{other}`\n{usage}")),
+        }
+        k += 2;
+    }
+    let open = || std::fs::File::open(path).map(|f| std::io::BufReader::with_capacity(1 << 22, f)).map_err(|e| format!("cannot read {path}: {e}"));
+    // Pass 1: every stock's book and every check.
+    let first = read_file(open()?, &HashSet::new(), levels).map_err(|e| format!("{path}: {e}"))?;
+    let chosen: Vec<u16> = if symbols.is_empty() {
+        first.check.most_traded(replay)
+    } else {
+        symbols.iter().map(|s| first.check.per_stock.iter().find(|(_, st)| &st.symbol == s).map(|(&l, _)| l).ok_or_else(|| format!("no stock {s} in {path}"))).collect::<Result<_, _>>()?
+    };
+    // Pass 2: the chosen stocks in LOBSTER form, checked against LOBSTER's own rebuild.
+    let second = read_file(open()?, &chosen.iter().copied().collect(), levels).map_err(|e| format!("{path}: {e}"))?;
+    let (mut total, mut sample_naive, mut sample_cf) = (LeaveOneOut::default(), LeaveOneOut::default(), LeaveOneOut::default());
+    let mut per_stock = Vec::new();
+    for l in &chosen {
+        let msgs = &second.exported[l];
+        let name = &first.check.per_stock[l].symbol;
+        let executions = msgs.iter().filter(|m| m.kind == data::lobster::Kind::ExecuteVisible).count();
+        let blind = TakerInfo { fill_takers: vec![0; executions], ..TakerInfo::default() };
+        let all = leave_one_out(msgs, 0);
+        let naive = leave_one_out_with(msgs, 0, &LooOptions { sample_filled: sample, ..LooOptions::default() });
+        let cf = leave_one_out_with(msgs, 0, &LooOptions { takers: Some(&blind), counterfactual: true, sample_filled: sample, ..LooOptions::default() });
+        per_stock.push(format!("{{\"symbol\":\"{name}\",\"messages\":{},\"all_orders\":{},\"filled_sample\":{},\"filled_sample_counterfactual\":{}}}", msgs.len(), all.to_json(), naive.to_json(), cf.to_json()));
+        total.absorb(&all);
+        sample_naive.absorb(&naive);
+        sample_cf.absorb(&cf);
+    }
+    let names: Vec<String> = chosen.iter().map(|l| format!("\"{}\"", first.check.per_stock[l].symbol)).collect();
+    let files = std::iter::once(path).chain(also.iter()).map(|p| file_info(Path::new(p))).collect::<std::io::Result<Vec<_>>>().map_err(|e| e.to_string())?;
+    let p = Provenance {
+        source,
+        symbol: "all stocks in the file".into(),
+        date,
+        data_level: DataLevel::Mbo,
+        levels,
+        files,
+        notes: vec![
+            "Field layouts are from memory of the ITCH 5.0 specification; each type's length is checked against the file's own length prefixes, and the book rebuild counts every inconsistency a wrong offset would cause.".into(),
+            "ITCH names no taker, so the taker-remainder rule does not apply and the counterfactual re-matches within the price level only.".into(),
+            "Executions against non-displayed orders and crosses never fill a copy (conservative).".into(),
+        ],
+    };
+    Ok(format!(
+        "{{\"provenance\":{},\"check\":{},\"cross_check\":{{\"stocks\":[{}],\"levels\":{levels},\"compared\":{},\"mismatches\":{}}},\
+         \"replay\":{{\"all_orders\":{},\"filled_sample\":{},\"filled_sample_counterfactual\":{},\"per_stock\":[{}]}}}}",
+        p.to_json(),
+        first.check.to_json(20),
+        names.join(","),
+        second.cross_compared,
+        second.cross_mismatches,
+        total.to_json(),
+        sample_naive.to_json(),
+        sample_cf.to_json(),
+        per_stock.join(",")
+    ))
+}
+
 fn replay_truth(args: &[String]) -> Result<String, String> {
     use data::provenance::{DataLevel, Provenance, file_info};
     let usage = "usage: hftsim replay-truth MESSAGE_FILE [--from-seconds S] [--takers FILE --fills FILE] [--source TEXT] [--symbol S] [--date D] [--also FILE ...]";
@@ -107,7 +189,7 @@ fn replay_truth(args: &[String]) -> Result<String, String> {
             if info.fill_takers.len() != executions {
                 return Err(format!("{f}: {} fills for {executions} executions in {path}", info.fill_takers.len()));
             }
-            let run = |taker_rule, counterfactual| data::replay::leave_one_out_with(&messages, from_ns, &data::replay::LooOptions { takers: Some(&info), taker_rule, counterfactual }).to_json();
+            let run = |taker_rule, counterfactual| data::replay::leave_one_out_with(&messages, from_ns, &data::replay::LooOptions { takers: Some(&info), taker_rule, counterfactual, sample_filled: 0 }).to_json();
             also.extend([t.clone(), f.clone()]);
             format!(",\"variants\":{{\"taker_rule\":{},\"counterfactual\":{},\"counterfactual_taker_rule\":{}}}", run(true, false), run(false, true), run(true, true))
         }
@@ -208,6 +290,7 @@ fn main() {
         Some("lobster-check") => lobster_check(&args[1..]),
         Some("replay-check") => replay_check(&args[1..]),
         Some("replay-truth") => replay_truth(&args[1..]),
+        Some("itch-check") => itch_check(&args[1..]),
         Some("l3-check") => l3_check(&args[1..]),
         _ => {
             println!("{COMMANDS}\n\n{}", runner::USAGE);

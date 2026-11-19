@@ -1,0 +1,38 @@
+# GitHub Pages (Jekyll) settings for the project site: rasmuscodes.github.io/hft-sim
+title: hft-sim
+description: >-
+  A deterministic exchange, a latency-aware market simulator and a research layer that keeps
+  simulation results and historical-market evidence apart.
+url: https://rasmuscodes.github.io
+baseurl: /hft-sim
+repository: RasmusCodes/hft-sim
+
+markdown: kramdown
+kramdown:
+  input: GFM
+  hard_wrap: false
+  auto_ids: true
+  syntax_highlighter: rouge
+
+plugins:
+  - jekyll-relative-links
+  - jekyll-optional-front-matter
+  - jekyll-readme-index
+  - jekyll-default-layout
+  - jekyll-titles-from-headings
+
+relative_links:
+  enabled: true
+
+# Source code, build output and data are not part of the site (the landing page replaces the
+# README, which links to it).
+exclude:
+  - crates
+  - python
+  - tools
+  - target
+  - data
+  - Cargo.toml
+  - Cargo.lock
+  - LICENSE
+  - README.md

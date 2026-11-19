@@ -1,0 +1,10 @@
+[package]
+name = "data"
+description = "Historical market data: LOBSTER files (read, write, reconstruct and check against vendor snapshots), provenance, replay fill models"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+publish = false
+
+[dependencies]
+lob = { path = "../lob" }

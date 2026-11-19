@@ -1,0 +1,16 @@
+[package]
+name = "sim"
+description = "Deterministic discrete-event market simulator with an explicit latency model (hft-sim kernel)"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+publish = false
+
+# Like `lob`, no third-party dependencies: the kernel must build offline and its behaviour
+# must not change when an external crate does.
+[dependencies]
+lob = { path = "../lob" }
+
+[[bench]]
+name = "kernel_bench"
+harness = false

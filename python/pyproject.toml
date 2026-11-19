@@ -1,0 +1,21 @@
+[build-system]
+requires = ["maturin>=1.16,<2"]
+build-backend = "maturin"
+
+[project]
+name = "hftsim"
+version = "0.1.0"
+description = "Research layer over the hft-sim market simulator: scenarios, parallel runs, statistics, Arrow and Parquet export"
+requires-python = ">=3.10"
+
+[project.optional-dependencies]
+arrow = ["pyarrow>=14"]
+
+# `maturin develop --release` (in a virtual environment, from this directory) compiles
+# native/ into hftsim/_native and installs the package in editable mode. Without it the package
+# still works through the `hftsim` binary, using only the standard library.
+[tool.maturin]
+python-source = "."
+module-name = "hftsim._native"
+manifest-path = "native/Cargo.toml"
+features = ["pyo3/extension-module"]

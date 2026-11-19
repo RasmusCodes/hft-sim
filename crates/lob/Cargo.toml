@@ -1,0 +1,15 @@
+[package]
+name = "lob"
+description = "Deterministic price-time-priority limit order book and matching engine (exchange core of hft-sim)"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+publish = false
+
+# Intentionally no dependencies: the exchange core must build offline, reproducibly,
+# and must not change behaviour when a third-party crate changes.
+[dependencies]
+
+[[bench]]
+name = "engine_bench"
+harness = false

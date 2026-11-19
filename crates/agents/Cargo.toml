@@ -1,0 +1,14 @@
+[package]
+name = "agents"
+description = "Trading agents for the hft-sim market simulator"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+publish = false
+
+[dependencies]
+lob = { path = "../lob" }
+sim = { path = "../sim" }
+
+[dev-dependencies]
+analysis = { path = "../analysis" }

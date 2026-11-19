@@ -1,0 +1,168 @@
+---
+layout: default
+title: hft-sim
+landing: true
+description: A deterministic exchange, a latency-aware market simulator and a research layer that keeps simulation results and historical-market evidence apart.
+---
+<section class="hero">
+  <p class="eyebrow">Market microstructure research platform · Rust + Python</p>
+  <h1>hft-sim</h1>
+  <p class="lead">A deterministic exchange, a latency-aware discrete-event simulator, autonomous
+  trading agents and a ten-step market-making ladder. A research layer measures everything from
+  the exchange's own logs, and keeps simulation results apart from historical-market evidence.</p>
+  <ul class="pills">
+    <li class="pill done">Phases 0–4 complete</li>
+    <li class="pill">Phase 5: historical data, in progress</li>
+    <li class="pill">Dashboard: planned</li>
+  </ul>
+  <div class="actions">
+    <a class="btn primary" href="docs/ARCHITECTURE.html">Read the architecture</a>
+    <a class="btn" href="docs/RESEARCH_RESULTS.html">Research results</a>
+    <a class="btn" href="docs/HISTORICAL_DATA.html">Historical data</a>
+    <a class="btn" href="https://github.com/RasmusCodes/hft-sim">Source on GitHub</a>
+  </div>
+</section>
+
+<section class="block" aria-label="Key numbers">
+  <div class="stats">
+    <div class="stat"><div class="num">8.6 M/s</div><div class="label">messages through the matching engine with ~1,000 resting orders (2.4 M/s with ~190,000)</div></div>
+    <div class="stat"><div class="num">205 + 23</div><div class="label">Rust and Python tests passing, with no compiler warnings</div></div>
+    <div class="stat"><div class="num">117 / 119</div><div class="label">deliberately planted bugs caught by the tests; the other 2 proven unobservable</div></div>
+    <div class="stat"><div class="num">1,136 / 1,136</div><div class="label">real Bitstamp order-level snapshots reproduced by the book rebuild</div></div>
+  </div>
+</section>
+
+<section class="block">
+  <h2>How a simulated market runs</h2>
+  <p class="sub">No trader ever sees the true book. Every message takes a sampled amount of time,
+  and every order passes the same gateway checks a real venue would apply.</p>
+  <div class="flow" role="list">
+    <div class="node" role="listitem"><b>Agents</b>Noise, fundamental, informed, technical, pairs, execution, latency-arbitrage and market-making agents</div>
+    <div class="arrow" aria-hidden="true">→</div>
+    <div class="node" role="listitem"><b>Latency links</b>Sampled delays with heavy tails and spikes; never reordered on a link</div>
+    <div class="arrow" aria-hidden="true">→</div>
+    <div class="node" role="listitem"><b>Gateways</b>Throttles, pre-trade risk limits, client ids, ledgers</div>
+    <div class="arrow" aria-hidden="true">→</div>
+    <div class="node" role="listitem"><b>Matching engine</b>Price-time priority, auctions, self-trade prevention; a pure function of its input</div>
+    <div class="arrow" aria-hidden="true">→</div>
+    <div class="node" role="listitem"><b>Delayed feeds</b>Order-by-order data, private or shared per location, rebuilt into each agent's own book view</div>
+  </div>
+  <p class="flow-note">The exchange's event log feeds the metrics and the research layer. Every run is reproducible from its seed, down to a digest of the event stream.</p>
+</section>
+
+<section class="block">
+  <h2>What is inside</h2>
+  <p class="sub">Each part is specified in its own document and tested against something independent of
+  itself.</p>
+  <div class="cards">
+    <div class="card">
+      <h3>Exchange core</h3>
+      <p>Limit and market orders, GTC/IOC/FOK, post-only, cancel/replace with CME-style priority,
+      self-trade prevention, call auctions and halts. It is checked against an independent naive
+      implementation over about 18 million fuzzed commands.</p>
+      <a class="more" href="docs/MATCHING_RULES.html">Matching rules →</a>
+    </div>
+    <div class="card">
+      <h3>Simulation kernel</h3>
+      <p>A discrete-event loop with latency profiles per location, gateway sessions, engine queues
+      and delayed market-data feeds. 1,000 agents on shared feeds run 5.3× faster than real time.</p>
+      <a class="more" href="docs/SIMULATION.html">Simulation model →</a>
+    </div>
+    <div class="card">
+      <h3>Agents and a calibrated market</h3>
+      <p>A background market calibrated to five stylised facts: cancellation rates, the share of
+      orders executed, a one-tick spread, long-memory order signs and concave price impact. Strategy
+      agents trade against it through the latency model.</p>
+      <a class="more" href="docs/STYLIZED_FACTS.html">Calibration →</a>
+    </div>
+    <div class="card">
+      <h3>Market-making ladder</h3>
+      <p>Ten steps, from a fixed spread to Avellaneda–Stoikov and Guéant–Lehalle–Fernandez-Tapia,
+      with volatility, order-flow, adverse-selection, queue-position and multi-level variants.
+      Formulas transcribed from the papers and checked numerically.</p>
+      <a class="more" href="docs/MARKET_MAKING.html">Market making →</a>
+    </div>
+    <div class="card">
+      <h3>Research layer</h3>
+      <p>Rule 600/605 spreads, an exact PnL decomposition, latency races, queue fill rates and
+      order-flow imbalance, all from the exchange's logs. A Python package runs seed grids with
+      confidence intervals and writes the research reports.</p>
+      <a class="more" href="docs/METRICS.html">Metrics →</a>
+    </div>
+    <div class="card">
+      <h3>Historical data</h3>
+      <p>A LOBSTER adapter; real order-level data recorded from Bitstamp's public feed and checked
+      order by order against the exchange's own snapshots; a conservative replay fill model checked
+      against real fills.</p>
+      <a class="more" href="docs/HISTORICAL_DATA.html">Historical data →</a>
+    </div>
+  </div>
+</section>
+
+<section class="block">
+  <h2>Two kinds of evidence, kept apart</h2>
+  <p class="sub">A strategy that does well in a simulator has only done well in that simulator.
+  Simulation findings and real-data checks are reported separately, each with its limits.</p>
+  <div class="split">
+    <div class="panel">
+      <p class="tag">Simulation stage · phase 4</p>
+      <h3>Eight research questions, 8 seeds each, two backgrounds</h3>
+      <ul>
+        <li>More inventory aversion gave a market maker more PnL <em>and</em> less inventory risk, through less adverse selection.</li>
+        <li>Signal quality, not the number of informed traders, decided the maker's PnL.</li>
+        <li>Fill probability fell from about 90% at the front of the queue to about 10% behind 500 shares.</li>
+        <li>A remote maker sent about 3× more cancels too late, but lost little PnL.</li>
+        <li>Adverse selection was about a third complete after 50 ms, and complete by 1 s.</li>
+        <li>Order-flow imbalance explained about 5% of 0.1 s price moves and about 60% at 10 s.</li>
+        <li>The adaptive maker beat the static one in all eight settings.</li>
+        <li>More makers meant lower PnL each, more in total, and a deeper book.</li>
+      </ul>
+      <p class="note">The maker made money in nearly every configuration. That is a fact about this
+      simulator, which is why none of it is a profitability claim. <a href="docs/RESEARCH_RESULTS.html">Read the results →</a></p>
+    </div>
+    <div class="panel">
+      <p class="tag">Historical stage · phase 5</p>
+      <h3>19 minutes of real Bitstamp BTC/USD order-level data</h3>
+      <ul>
+        <li>The book rebuilt from 365,180 order events reproduces all 1,136 of the exchange's own order-level snapshots. Broken copies of the data are caught down to one satoshi on one order.</li>
+        <li>The replay fill model was run leave-one-out on 172,862 real resting orders. In four variants it never filled an order the exchange left unfilled, nor one earlier or for more.</li>
+        <li>With the takers' published orders, and history rebuilt without each order, it recovers 292 of 298 real fills at the right millisecond and 99.6% of the volume.</li>
+        <li>The same check found an optimistic trade-through rule in the model, and it was fixed.</li>
+      </ul>
+      <p class="note">One venue and one window; nothing here is shown about equities yet. <a href="docs/HISTORICAL_DATA.html">Read the details →</a></p>
+    </div>
+  </div>
+</section>
+
+<section class="block">
+  <h2>How correctness is checked</h2>
+  <ul class="checks">
+    <li><b>Hand-computed scenarios.</b> 52 rulebook cases with exact expected events.</li>
+    <li><b>Differential fuzzing.</b> The engine against an independent naive implementation, cross-checked after every command.</li>
+    <li><b>Mutation testing.</b> Bugs planted one at a time in every crate. The tests caught 117 of 119; the other 2 cannot change behaviour.</li>
+    <li><b>Reproducibility.</b> Golden digests of the event stream: the same seed gives the same run, bit for bit.</li>
+    <li><b>Accounting identities.</b> Every agent's PnL decomposition equals its exchange ledger to the last fee unit.</li>
+    <li><b>Ground truth.</b> The replay fill model is checked against the exchange's own fills in the simulator, and against real orders on Bitstamp.</li>
+  </ul>
+</section>
+
+<section class="block" id="docs">
+  <h2>Documents</h2>
+  <p class="sub">The full specification and evidence, as written in the repository.</p>
+  <div class="doclist">
+    <a href="docs/ARCHITECTURE.html"><b>ARCHITECTURE</b><span>Full-system design, language choice and roadmap</span></a>
+    <a href="docs/MATCHING_RULES.html"><b>MATCHING_RULES</b><span>The exchange rulebook (normative)</span></a>
+    <a href="docs/SIMULATION.html"><b>SIMULATION</b><span>Simulation kernel and latency model (normative)</span></a>
+    <a href="docs/AGENTS.html"><b>AGENTS</b><span>Trading agents and presets</span></a>
+    <a href="docs/STYLIZED_FACTS.html"><b>STYLIZED_FACTS</b><span>Calibration targets, method, results and deviations</span></a>
+    <a href="docs/MARKET_MAKING.html"><b>MARKET_MAKING</b><span>Formula register, the ladder, the agent, first runs</span></a>
+    <a href="docs/METRICS.html"><b>METRICS</b><span>Metric definitions, sources, choices and verification</span></a>
+    <a href="docs/RESEARCH_RESULTS.html"><b>RESEARCH_RESULTS</b><span>What the eight research reports show (simulation only)</span></a>
+    <a href="reports/"><b>reports/</b><span>The eight generated reports, with the manifests that reproduce every run</span></a>
+    <a href="docs/HISTORICAL_DATA.html"><b>HISTORICAL_DATA</b><span>LOBSTER, the Bitstamp recording and its checks, the replay fill model</span></a>
+    <a href="docs/RESEARCH_SURVEY.html"><b>RESEARCH_SURVEY</b><span>Matching-engine and market-making literature, with verification tags</span></a>
+    <a href="docs/RISKS.html"><b>RISKS</b><span>Technical and research risk register</span></a>
+    <a href="docs/TESTING.html"><b>TESTING</b><span>Correctness evidence, phase by phase</span></a>
+    <a href="docs/BENCHMARKS.html"><b>BENCHMARKS</b><span>Performance, methodology and raw output</span></a>
+  </div>
+</section>

@@ -1,0 +1,22 @@
+# Build output
+/target/
+python/native/target/
+python/hftsim/*.pyd
+python/hftsim/*.so
+
+# Python environment and caches
+python/.venv/
+python/.cache/
+__pycache__/
+*.pyc
+
+# Market data: recordings and vendor files are not redistributed (docs/HISTORICAL_DATA.md)
+/data/
+
+# Run outputs written by the examples
+python/runs/
+/out/
+
+# Jekyll (GitHub Pages) local builds
+/_site/
+/.jekyll-cache/

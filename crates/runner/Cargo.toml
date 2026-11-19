@@ -1,0 +1,18 @@
+[package]
+name = "runner"
+description = "hftsim: run one simulated market from command-line flags and report every metric as JSON"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+publish = false
+
+[[bin]]
+name = "hftsim"
+path = "src/main.rs"
+
+[dependencies]
+lob = { path = "../lob" }
+sim = { path = "../sim" }
+agents = { path = "../agents" }
+analysis = { path = "../analysis" }
+data = { path = "../data" }

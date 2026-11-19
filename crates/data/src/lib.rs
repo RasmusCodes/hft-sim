@@ -7,6 +7,7 @@
 
 #![forbid(unsafe_code)]
 
+pub mod itch;
 pub mod l3;
 pub mod lobster;
 pub mod provenance;

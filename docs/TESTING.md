@@ -92,6 +92,11 @@ sharing the scratch build folder. It was noticed when a mutant of the analysis c
 simulation digest test that cannot depend on that crate. The script now touches the restored files,
 and every result below comes from a full rerun with the fixed script. The lob results are unchanged.
 
+**A second flaw, found on 2026-11-19.** `powershell -File` passes `-Ids A13,S02` as one string, so
+a run started that way selected no mutant and reported nothing. The script now splits the list and
+fails when no mutant matches. Earlier runs passed the ids from inside PowerShell, so their results
+stand.
+
 Results:
 
 | | Mutation | Result |
@@ -147,7 +152,8 @@ $env:LOB_FUZZ_SEEDS=1500; $env:LOB_FUZZ_STEPS=4000; cargo test --release --offli
 powershell -File tools\mutation_test.ps1 -Only lob
 ```
 
-`-Only sim` and `-Only agents` select the other crates, and `-Ids A13,S02` runs single mutants.
+`-Only sim`, `agents`, `mm`, `metrics` and `data` select the other groups, and `-Ids A13,S02`
+runs single mutants.
 
 ## Phase 1: simulation kernel
 
@@ -432,9 +438,9 @@ So every mutant was caught on the first run, and these six only because of the e
 ## Phase 5 (part 1): historical data
 
 The exit criterion is "reconstruction matches vendor snapshots; provenance on every result". It
-is checked on simulated stock-days written in LOBSTER's format and on one real recording, 19
-minutes of Bitstamp BTC/USD order-level data. No real LOBSTER file has been read
-([HISTORICAL_DATA.md](HISTORICAL_DATA.md) §6–7).
+is checked on simulated stock-days written in LOBSTER's format, on one real recording (19 minutes
+of Bitstamp BTC/USD order-level data), and on one real equity day from Nasdaq BX's ITCH feed. No
+real LOBSTER file has been read ([HISTORICAL_DATA.md](HISTORICAL_DATA.md) §6–8).
 
 | Area | Tests | What they establish |
 |---|---|---|
@@ -444,6 +450,8 @@ minutes of Bitstamp BTC/USD order-level data. No real LOBSTER file has been read
 | Simulated days through LOBSTER files (`runner/tests/lobster.rs`) | 5 integration | **Directory check:** two days in nested folders are found, paired by name and checked, and an order-book file without its message file is listed as unpaired. **Round trip:** 165,052 rows, every row matched with no reconciliation, executions = trades, same digest as `hftsim run`. **Independent top of book:** the written best bid and ask equal `lob::MboBook`'s at every event time. **Mid-session start:** only row 1 reconciles; 99.999% of rows match unaided; nothing unexplained. **Replay against the exchange:** 330 probes, no fill the exchange did not make and none earlier, every visible fill found at the same nanosecond |
 | Python (`python/tests/test_lobster.py`) | 2 | Export a scenario, check it: every row matches, executions equal trades, provenance names the simulated symbol; the replay check from Python is never optimistic |
 | Order-level check (`data::l3`) | 12 unit | Hand-built streams. A hidden opening book is revealed by the first snapshot (explained), then snapshots are exact. Differences on orders the stream created are unexplained and classified (amount, price, extra), with the example JSON checked exactly. Events stamped at a snapshot's own time, or within one coarse stamp unit before it, cannot be ordered against it. A lagging snapshot is found by the offset search, also when it reveals an order at the same time, and the offset's start and end are both checked. A snapshot never reveals an order the stream creates later. A revealed order is retired only when the stream says nothing about it within the comparison, and one changed without an event is corrected. Priority within a price is checked, crossed books are timed from the first snapshot, and files parse |
+| ITCH 5.0 (`data::itch`) | 6 unit | Hand-built binary messages. Each layout parses to the right fields: add, replace, cross. A message too short for its type, or with a side other than B/S, is refused, and a wrong length is reported with its type. A day with adds, an execution, a cancel, a delete, a replace, an unknown reference and an unknown type is rebuilt with every count right. It is written in LOBSTER form and agrees with LOBSTER's rebuild after every message. Every other inconsistency the real day was checked for is made to happen once and counted: a reused order reference, an execution sent under another stock, a timestamp that goes back. An execution with its own printed price is exported at the resting order's price; a non-displayed trade is counted as hidden. Executions are checked against arrival order: a replacement's jump is explained by its origin, a plain add's is not. Crossed books are counted by session |
+| Python (`python/tests/test_itch.py`) | 2 | A gzipped hand-built day decompresses, and is reused on a second call; `hftsim itch-check` runs end to end (checks, cross-check, replay classes traced by hand). A corrupted gzip trailer fails its CRC check |
 | Python (`python/tests/test_bitstamp.py`) | 7 | WebSocket framing over a socket pair: text, long and fragmented messages, a ping answered with a masked pong, masked client frames, close raises. Exact unit conversion, finer digits refused. A synthetic recording converts and checks: a stop order left out, an event-id gap counted, a pre-recording order revealed. The break test catches each break on a synthetic recording. Crossings are classified by subtype and fate. The recording becomes LOBSTER messages row for row: an opening-book order, a partial maker fill and a cancel, an IOC taker that never rests, a rejected MOC, and a taker whose remainder rests. The fills and takers files are checked row for row, including the premise check. `hftsim replay-truth` then classifies the orders in all four variants, each traced by hand |
 
 The replay check was also run at full length on both backgrounds with 1- and 5-share probes, about
@@ -487,16 +495,33 @@ history minus the order, or rebuilt without it; with and without the taker-remai
   only the volume that traded through, which removed 0.72 BTC of modelled volume that never
   traded through.
 
+### Real data: Nasdaq BX ITCH (2019-12-30)
+
+`python -I -m hftsim.itch check` on Nasdaq's public sample day: 29,156,757 messages, 8,906 stocks
+(HISTORICAL_DATA §7).
+* **Layouts:** every message type's length matches its layout.
+* **Book rebuild:** zero unknown references, duplicates, stock mismatches, oversize executions or
+  cancellations, out-of-order timestamps and crossed books. Every order is gone by the end of the
+  day.
+* **Independent rebuild:** for the 8 most-traded stocks, the best 10 levels agree with LOBSTER's
+  rebuild after all 1,608,422 book-changing messages.
+* **Arrival order:** 99.79% of executions were of the oldest order at their level. 1,244 were not,
+  and the cause was not found.
+* **Replay, leave-one-out on 801,154 orders:** 539 false fills (0.08% of never-filled orders), 72
+  early first fills and 553 overfills, all needing such a queue jump. 95% of the real volume is
+  eventually found.
+
 ### Mutation testing (phase 5)
 
-`tools/mutation_test.ps1 -Only data` plants 34 bugs:
+`tools/mutation_test.ps1 -Only data` plants 44 bugs:
 * 12 in `data::lobster` and `data::replay` (D01–D12, 2026-11-17);
 * 5 in the leave-one-out check (D13–D17, 2026-11-18);
 * 5 in the trade-through cap, the taker-remainder rule and the counterfactual (D18–D22,
   2026-11-18);
-* 12 in `data::l3` (L01–L12, 2026-11-18).
+* 12 in `data::l3` (L01–L12, 2026-11-18);
+* 10 in `data::itch` (I01–I10, 2026-11-19).
 
-For each one it runs the data suite and the simulated-day tests. **All 34 are caught**, D04 and
+For each one it runs the data suite and the simulated-day tests. **All 44 are caught**, D04 and
 D20 only after the gaps they exposed were closed:
 
 | | Mutation | Caught by |
@@ -550,6 +575,24 @@ later, unrelated message now makes it join before the taker's remainder is hande
 
 L12 is the D10 pattern again: the gap was found while writing the mutant, and the test came first.
 
+| | Mutation in `data::itch` | Caught by |
+|---|---|---|
+| I01 | An add's price read 4 bytes early | layouts, inconsistencies, arrival order |
+| I02 | An execution's expected length one byte short | wrong length, day rebuild |
+| I03 | A delete leaves its shares in the book | day rebuild (the independent rebuild disagrees) |
+| I04 | The arrival-order check flags executions at the front | arrival order |
+| I05 | A locked book is not counted as crossed | crossed books by session |
+| I06 | A replacement forgets its original order's arrival | arrival order (the jump is no longer explained) |
+| I07 | An execution with a price is exported at its printed price | inconsistencies |
+| I08 | An execution under another stock is not flagged | inconsistencies |
+| I09 | Timestamps compared with the first, not the latest | inconsistencies |
+| I10 | Reused order references never counted | inconsistencies |
+
+I07–I10 are caught only by the inconsistencies test, which was written before the run. While
+choosing these mutants I found that no test made a reused reference, a stock mismatch or a
+backward timestamp happen, or sent an execution with its own price. The real day's zero counts for
+those checks would have meant nothing if the counters were broken.
+
 ### What this does not establish (phase 5, part 1)
 
 * **That the reader handles real LOBSTER files.** The format details marked [S] or [M] in
@@ -559,5 +602,9 @@ L12 is the D10 pattern again: the gap was found while writing the mutant, and th
 * **That the order-level check holds elsewhere.** It passed on one 19-minute window of one crypto
   venue. Another window, venue or snapshot depth may expose cases these tests do not cover.
 * **That replay fill rates transfer.** The leave-one-out copies are orders someone really placed,
-  on one crypto venue for 19 minutes. A strategy's own orders, or another venue's takers, could
-  see a different share of fills through the blind spot.
+  on one crypto venue for 19 minutes and one equity venue for one day. A strategy's own orders, or
+  another venue's takers, could see a different share of fills through the blind spot.
+* **That the ITCH layouts match the specification text.** They match the data: lengths, and a
+  rebuild without a single inconsistency.
+* **Why BX executes out of arrival order** in 0.2% of cases, or that the replay model is
+  conservative there. It is not, in 0.08% of never-filled orders.

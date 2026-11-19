@@ -66,8 +66,12 @@ It exists to stop participants gaming a known uncross time.
 ### A3. Market-data formats (for the historical-data adapters)
 
 * **Nasdaq TotalView-ITCH 5.0:** order-level messages (add, add with attribution, executed, executed
-  with price, cancel, delete, replace, non-cross trade, cross trade, imbalance indicator) [S]; field
-  layouts not read. Databento normalises a replace as delete + add with a new id [S].
+  with price, cancel, delete, replace, non-cross trade, cross trade, imbalance indicator) [S].
+  Databento normalises a replace as delete + add with a new id [S]. *Since phase 5:* the field
+  layouts are implemented from memory [M] and checked against a real day (Nasdaq BX, 2019-12-30,
+  29.2 million messages). Every type's length matches the data's own length prefixes, and the
+  book rebuild finds no inconsistency (HISTORICAL_DATA §7). The specification text itself was not
+  read.
 * **LOBSTER** (Huang & Polak 2011): a message file per day with event types 1 = new limit order,
   2 = partial cancel, 3 = full deletion, 4 = execution of a visible order, 5 = execution of a hidden
   order, 6 = cross trade, 7 = trading halt. Prices are dollars × 10,000 and direction is ±1. An
@@ -262,7 +266,10 @@ from memory; none of the primary texts were re-read.
 
 * FIX specification text for `OrderQty` in 35=G and the `OrderQty ≤ CumQty` case (only vendor docs and forum snippets).
 * Euronext auction criteria and market-order handling after the uncross; Xetra minimum-surplus and market-pressure steps.
-* ITCH 5.0 field layouts; Nasdaq rules 4752/4754/4757 text; cross tie-breaks beyond imbalance.
+* The ITCH 5.0 specification text (layouts checked against data instead, HISTORICAL_DATA §7);
+  Nasdaq rules 4752/4754/4757 text; cross tie-breaks beyond imbalance.
+* Nasdaq BX's priority rules: 0.2% of BX's executions on 2019-12-30 pass an older order at the
+  same price, and the rule that allows it was not found (HISTORICAL_DATA §7).
 * CME Velocity Logic duration and Stop Spike Logic mechanics.
 * Millisecond-level lifetimes of fleeting orders; post-2013 MIDAS cancel rates.
 * LOBSTER's official event table and order-book layout. Since phase 5 they are at secondary-source

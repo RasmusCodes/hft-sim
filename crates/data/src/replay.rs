@@ -4,7 +4,9 @@
 //! (RISKS K3):
 //! * the order joins the back of its price level after every message stamped at or before its
 //!   entry time. Everything resting there then is ahead of it, including the opening book's
-//!   unknown orders (seeds), which entered before the file starts;
+//!   unknown orders (seeds), which entered before the file starts. An order with an expiry
+//!   leaves before every message stamped at or after it, so neither the stamp it entered in nor
+//!   the one it was cancelled in is seen;
 //! * cancellations and deletions of orders ahead move it up; those of orders behind do nothing;
 //! * an execution at its price of an order ahead (or of an unknown, pre-existing order) only
 //!   shortens the queue ahead. An execution of an order that joined *behind* it is volume that
@@ -16,6 +18,10 @@
 //! * optionally ([`replay_passive_with`]), the taker-remainder rule: a taker that ended its
 //!   arrival with volume unfilled at a limit reaching the order's price had exhausted every
 //!   resting order it could reach, so that volume would have reached the order too;
+//! * an execution away from the executed order's own price is one at a price it was ranked at
+//!   but did not display (Nasdaq's Price to Comply orders, ITCH `C` messages). Those shares leave
+//!   the displayed queue, but nothing traded at the displayed price, so like a hidden execution
+//!   it fills nothing;
 //! * hidden executions and crosses never fill it, and it never changes the historical book.
 //!
 //! An order that would cross the book on entry is marketable, not passive; it gets no fills here
@@ -39,7 +45,9 @@ pub struct PassiveOrder {
     pub price: i64,
     /// Shares.
     pub size: i64,
-    /// Cancelled at this time if not filled by then.
+    /// Cancelled at this time if not filled by then. It sees no message stamped at or after this
+    /// time, as it sees none stamped at or before its entry: a stamp holds several messages, and
+    /// the cancellation may have come first.
     pub expire_ns: Option<i64>,
     /// A historical order this one stands in for (leave-one-out): that order's own messages are
     /// invisible to it, as if it had never been in the stream. `None` for a purely hypothetical
@@ -199,18 +207,29 @@ pub fn replay_passive_with(messages: &[Message], snapshots: Option<&[Snapshot]>,
         }
         // Expiries before this message.
         active.retain(|a| match orders[a.k].expire_ns {
-            Some(x) if x < m.ts_ns => {
+            Some(x) if x <= m.ts_ns => {
                 out[a.k].done_ns = Some(x);
                 false
             }
             _ => true,
         });
+        // An execution away from the executed order's own price (see the module documentation).
+        let off_price = m.kind == Kind::ExecuteVisible && book.price_of(m.order_id).is_some_and(|p| p != m.price);
         for a in &mut active {
             let o = orders[a.k];
             if m.side != o.side || Some(m.order_id) == o.own_order_id {
                 continue;
             }
             let fill = match m.kind {
+                Kind::ExecuteVisible if off_price => {
+                    if let Some(q) = a.ahead.get_mut(&m.order_id) {
+                        *q -= m.size.min(*q);
+                        if *q == 0 {
+                            a.ahead.remove(&m.order_id);
+                        }
+                    }
+                    None
+                }
                 Kind::Cancel | Kind::Delete if m.price == o.price => {
                     if let Some(q) = a.ahead.get_mut(&m.order_id) {
                         *q -= if m.kind == Kind::Delete { *q } else { m.size.min(*q) };
@@ -769,6 +788,29 @@ mod tests {
     }
 
     #[test]
+    fn an_execution_away_from_the_orders_own_price_fills_nothing() {
+        // Bids rest at 99.00: order 1 (100) ahead of our 20, order 2 (100) behind it; a second
+        // copy of ours bids 10 at 99.01. Order 2 trades at 99.01, a price it was ranked at without
+        // displaying it (Nasdaq's Price to Comply; an ITCH "C"): nothing traded at 99.00, and
+        // that is no evidence about the queue at 99.01 either, so neither copy fills. Order 1
+        // trading at 99.01 takes its shares out of the queue ahead. When order 2 then trades at
+        // 99.00, the first copy is at the front and fills, and 99.01 was traded through.
+        let p = 990_000;
+        let ms = [
+            msg(1, Kind::Submit, 1, 100, p, Side::Buy),
+            msg(3, Kind::Submit, 2, 100, p, Side::Buy),
+            msg(4, Kind::ExecuteVisible, 2, 50, p + 100, Side::Buy),
+            msg(5, Kind::ExecuteVisible, 1, 100, p + 100, Side::Buy),
+            msg(6, Kind::ExecuteVisible, 2, 30, p, Side::Buy),
+        ];
+        let rs = replay_passive(&ms, None, 1, &[bid(2, p, 20), bid(2, p + 100, 10)]);
+        assert_eq!(rs[0].queue_ahead, 100);
+        assert_eq!(rs[0].fills, vec![PassiveFill { ts_ns: 6, size: 20, reason: FillReason::Queue }]);
+        assert_eq!(rs[0].queue_overstated, 0, "order 1's shares left the queue ahead when it traded at 99.01");
+        assert_eq!(rs[1].fills, vec![PassiveFill { ts_ns: 6, size: 10, reason: FillReason::TradeThrough }], "the 99.01 bid fills only when 99.00 trades");
+    }
+
+    #[test]
     fn cancellations_ahead_help_and_behind_do_not() {
         let p = 990_000;
         let ms = [
@@ -802,6 +844,19 @@ mod tests {
         assert_eq!(r[0].fills, vec![PassiveFill { ts_ns: 6, size: 10, reason: FillReason::TradeThrough }]);
         assert_eq!((r[0].filled, r[0].done_ns), (10, None));
         assert_eq!((r[1].filled, r[1].done_ns), (0, Some(4)));
+    }
+
+    #[test]
+    fn a_copy_sees_nothing_in_the_stamp_it_was_cancelled_in() {
+        // Our 20 bids at 99.00 with nothing ahead and is cancelled at t = 5. Order 2 joins behind
+        // it and trades at t = 5. Several messages share a stamp (ITCH stamps tie), and the
+        // cancellation may have come first, so that execution fills nothing: the same rule as for
+        // the stamp an order enters in.
+        let p = 990_000;
+        let ms = [msg(3, Kind::Submit, 2, 100, p, Side::Buy), msg(5, Kind::ExecuteVisible, 2, 50, p, Side::Buy)];
+        let r = &replay_passive(&ms, None, 1, &[PassiveOrder { expire_ns: Some(5), ..bid(2, p, 20) }])[0];
+        assert_eq!((r.filled, r.done_ns), (0, Some(5)));
+        assert_eq!(replay_passive(&ms, None, 1, &[PassiveOrder { expire_ns: Some(6), ..bid(2, p, 20) }])[0].filled, 20, "cancelled a stamp later, it fills");
     }
 
     #[test]

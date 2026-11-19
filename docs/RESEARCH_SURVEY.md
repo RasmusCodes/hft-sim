@@ -59,6 +59,7 @@ the primary text. Section D lists the formulas that must be transcribed from the
 | Market orders | CME "market with protection": the order fills only within a protection band around the best opposite price, and the remainder rests as a limit at the band edge [S]. | Not yet: market orders sweep (risk K14) |
 | Auctions | Xetra: maximum executable volume, with the price closest to the reference price as the last resort [S]. Minimum surplus and market pressure as explicit steps were not confirmed. Euronext criteria were not reachable. Nasdaq's opening cross minimises imbalance after maximising volume [S]. | Four-step rule over the tick grid (R7) |
 | Volatility halts | US LULD: 15 s in a limit state triggers a 5-minute pause, reopened by an auction at the listing exchange [S]. Xetra volatility interruption: an extra auction of at least 2 minutes with a **random end** [S]. CME Velocity Logic: a brief "reserved" state, then reopening [S]. | Halts/auctions driven by the session schedule (R8); automatic triggers later |
+| Displayed vs ranked price | Nasdaq and BX Rule 4702(b)(1)(A): a Price to Comply order that would lock or cross a protected quotation is displayed one minimum increment away and ranked at that quotation's price, non-displayed. Post-Only orders that are not attributable are adjusted the same way [V: SEC release 34-79290, fn. 8 and 10; release 34-78909, fn. 8]. On a BX day, every execution at a non-displayed price is one increment toward the other side, and these account for every execution that passed an older displayed order (HISTORICAL_DATA §7). | One venue and no protected quotations, so displayed and ranked prices coincide |
 
 The random end of Xetra's volatility auction is worth copying in the simulator's session scheduler.
 It exists to stop participants gaming a known uncross time.
@@ -71,7 +72,8 @@ It exists to stop participants gaming a known uncross time.
   layouts are implemented from memory [M] and checked against a real day (Nasdaq BX, 2019-12-30,
   29.2 million messages). Every type's length matches the data's own length prefixes, and the
   book rebuild finds no inconsistency (HISTORICAL_DATA §7). The specification text itself was not
-  read.
+  read. "Executed with price" (`C`) reports an execution at a price other than the displayed one;
+  on BX these are orders ranked at a non-displayed price (A2, "Displayed vs ranked price").
 * **LOBSTER** (Huang & Polak 2011): a message file per day with event types 1 = new limit order,
   2 = partial cancel, 3 = full deletion, 4 = execution of a visible order, 5 = execution of a hidden
   order, 6 = cross trade, 7 = trading halt. Prices are dollars × 10,000 and direction is ±1. An
@@ -268,8 +270,9 @@ from memory; none of the primary texts were re-read.
 * Euronext auction criteria and market-order handling after the uncross; Xetra minimum-surplus and market-pressure steps.
 * The ITCH 5.0 specification text (layouts checked against data instead, HISTORICAL_DATA §7);
   Nasdaq rules 4752/4754/4757 text; cross tie-breaks beyond imbalance.
-* Nasdaq BX's priority rules: 0.2% of BX's executions on 2019-12-30 pass an older order at the
-  same price, and the rule that allows it was not found (HISTORICAL_DATA §7).
+* BX's rulebook as in force on 2019-12-30. The SEC's 2016 description of Rule 4702(b)(1)(A) was
+  read [V], and the data matches it exactly (HISTORICAL_DATA §7), but the rule text of that date
+  was not.
 * CME Velocity Logic duration and Stop Spike Logic mechanics.
 * Millisecond-level lifetimes of fleeting orders; post-2013 MIDAS cancel rates.
 * LOBSTER's official event table and order-book layout. Since phase 5 they are at secondary-source
@@ -328,6 +331,8 @@ Bibliographic details: [V] where tagged in section B; otherwise [S] or [M] as no
 * Obizhaeva, A., Wang, J. (2013). Optimal trading strategy and supply/demand dynamics. *Journal of Financial Markets* 16(1), 1–32.
 * Perold, A. (1988). The implementation shortfall: paper versus reality. *Journal of Portfolio Management* 14(3), 4–9. [M]
 * Roll, R. (1984). A simple implicit measure of the effective bid-ask spread in an efficient market. *Journal of Finance* 39(4), 1127–1139. [M]
+* SEC (2016a). Notice of Filing of Proposed Rule Change To Amend BX Rules 4702 and 4703, Release 34-78909 (SR-BX-2016-046). *Federal Register* 81, 66708–66711, 28 September 2016. Footnote 8 read in the Federal Register text. [V]
+* SEC (2016b). Order Approving Proposed Rule Changes Relating to Post-Only Orders and Orders With Midpoint Pegging, Release 34-79290 (SR-BX-2016-046; SR-NASDAQ-2016-111). *Federal Register* 81, 81184–81186, 17 November 2016. Footnotes 8 and 10 read in the Federal Register text. [V]
 * SEC (2024). Disclosure of Order Execution Information, Release 34-99679 (amended Rule 605). [S]
 * 17 CFR 242.600 (definitions) and 242.605 (disclosure of order execution information), current eCFR text, read 2026-11-16. [V]
 * NBER Digest (October 2021). "The Race to Exploit Stock Price Differences between Exchanges" (summary of Aquilina, Budish & O'Neill). [S]

@@ -594,6 +594,11 @@ impl Rebuilder {
         self.orders.contains_key(&order_id)
     }
 
+    /// The price a live order submitted in the file rests at.
+    pub fn price_of(&self, order_id: i64) -> Option<i64> {
+        self.orders.get(&order_id).map(|o| o.1)
+    }
+
     /// Best bid and best ask prices.
     pub fn best(&self) -> (Option<i64>, Option<i64>) {
         let t = self.top(1);

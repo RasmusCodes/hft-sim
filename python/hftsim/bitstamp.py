@@ -300,8 +300,6 @@ def check(run: Path, depth: int = 100, tolerance_ms: float = 500.0) -> dict:
     """Convert a recording if needed and run `hftsim l3-check` on it; the report also lands in
     `derived/check.json`. Snapshots that do not match at their own time are searched for within
     ±`tolerance_ms` (the two channels' timing offset)."""
-    from .runner import binary, build
-
     derived = run / "derived"
     raw = [run / n for n in ("orders.jsonl", "snapshots.jsonl") if (run / n).exists()]
     made = [derived / n for n in ("events.csv", "snapshots.csv", "convert.json")]
@@ -640,13 +638,11 @@ def replay(run: Path) -> dict:
     file first (`to_lobster`); the report lands in `derived/replay.json`."""
     lob = to_lobster(run)
     manifest = json.loads((run / "manifest.json").read_text(encoding="utf-8")) if (run / "manifest.json").exists() else {}
-    from .runner import binary, build
+    from .runner import ensure_built
     import subprocess
 
-    if not binary().exists():
-        build()
     derived = run / "derived"
-    args = [str(binary()), "replay-truth", str(derived / "lobster_message.csv"), "--from-seconds", lob["from_seconds"],
+    args = [str(ensure_built()), "replay-truth", str(derived / "lobster_message.csv"), "--from-seconds", lob["from_seconds"],
             "--takers", str(derived / "lobster_takers.csv"), "--fills", str(derived / "lobster_fills.csv"),
             "--source", "Bitstamp WebSocket API v2 (recorded), as LOBSTER messages by python -m hftsim.bitstamp",
             "--symbol", manifest.get("market", "btcusd").upper(), "--date", manifest.get("started_utc", "unknown")]
@@ -665,11 +661,9 @@ def replay(run: Path) -> dict:
 def _l3_check(events: Path, snapshots: Path, depth: int, tolerance_ms: float, stamp_us: int = 1, extra: list[str] | None = None) -> dict:
     import subprocess
 
-    from .runner import binary, build
+    from .runner import ensure_built
 
-    if not binary().exists():
-        build()
-    args = [str(binary()), "l3-check", str(events), str(snapshots), "--depth", str(depth), "--tolerance-us", str(int(tolerance_ms * 1000)),
+    args = [str(ensure_built()), "l3-check", str(events), str(snapshots), "--depth", str(depth), "--tolerance-us", str(int(tolerance_ms * 1000)),
             "--event-stamp-us", str(stamp_us), *(extra or [])]
     proc = subprocess.run(args, capture_output=True, text=True)
     if proc.returncode != 0:

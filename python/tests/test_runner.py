@@ -7,6 +7,37 @@ from hftsim import Scenario, decomposition, market_makers, run, run_args, run_ma
 TINY = Scenario(secs=4, warmup_secs=1)
 
 
+class TestEnsureBuilt(unittest.TestCase):
+    """An existing binary is no proof it matches the sources: ask cargo once per process."""
+
+    def setUp(self):
+        from hftsim import runner
+
+        self.runner = runner
+        self.saved = (runner.build, runner._built)
+
+    def tearDown(self):
+        self.runner.build, self.runner._built = self.saved
+
+    def test_builds_once_per_process_even_when_the_binary_exists(self):
+        calls = []
+        self.runner.build, self.runner._built = (lambda: calls.append(1)), False
+        self.assertEqual(self.runner.ensure_built(), self.runner.binary())
+        self.runner.ensure_built()
+        self.assertEqual(len(calls), 1)
+
+    def test_without_cargo_an_existing_binary_is_used(self):
+        def no_cargo():
+            raise FileNotFoundError("cargo")
+
+        self.runner.build, self.runner._built = no_cargo, False
+        if self.runner.binary().exists():
+            self.assertEqual(self.runner.ensure_built(), self.runner.binary())
+        else:
+            with self.assertRaises(FileNotFoundError):
+                self.runner.ensure_built()
+
+
 class TestRunner(unittest.TestCase):
     def test_scenario_defaults_equal_the_binarys(self):
         # All flags passed explicitly from Python's defaults must give exactly the run the binary

@@ -405,8 +405,9 @@ Menkveld (2013) found exactly this split in real data: earnings on the spread, l
 
 * **Real equity data: Nasdaq ITCH 5.0** (`data::itch`, HISTORICAL_DATA §7). One Nasdaq BX day,
   29.2 million messages, passes every consistency check and agrees with LOBSTER's independent
-  rebuild. 0.2% of BX's executions break arrival order, so there the replay model is not strictly
-  conservative (0.08% false fills).
+  rebuild. Every execution at a displayed price followed arrival order; the apparent exceptions
+  were orders BX ranks at a better price than it displays. With two rules that came out of that,
+  the replay model is never optimistic on 801,154 real orders.
 
 Not built: Databento and crypto L2 adapters, and hybrid replay (mode b). No real LOBSTER file has
 been validated: LOBSTER's samples now need an academic application.
@@ -466,6 +467,6 @@ recorded event digests make a ready conformance suite for a C++ port.
 | 2 ✔ | Agent framework and background flow | Stylised facts reproduced (spread distribution, order-sign autocorrelation, cancel ratios, square-root impact) within stated tolerance: met on the calibration seeds and two holdout seed sets, pooled δ 0.53–0.58 and γ 0.46–0.54 ([STYLIZED_FACTS.md](STYLIZED_FACTS.md) §4) |
 | 3 ✔ | Market-making ladder | Each strategy unit-tested on synthetic paths; formulas transcribed and verified first: met ([MARKET_MAKING.md](MARKET_MAKING.md) §1, §5) |
 | 4 ✔ | Python layer, metrics, Monte Carlo, notebooks (built as a runner library with a command line, PyO3 bindings with Arrow/Parquet export, a standard-library Python package and generated reports; §7) | Metric unit tests on hand-computed cases; PnL decomposition identity holds exactly: met. Every agent's decomposition equals its exchange ledger to the last fee unit, over the whole run and over a window ([METRICS.md](METRICS.md) §4) |
-| 5 (in progress) | Historical adapters and validation | Reconstruction matches vendor snapshots; provenance on every result. So far: met on simulated LOBSTER files and on real Bitstamp BTC/USD order-level data (all 1,136 snapshots of a 19-minute recording), where the replay fill model was also checked against real fills (never optimistic). Equities: one Nasdaq BX ITCH day, consistent in every check (ITCH has no vendor snapshots), with the replay model 0.08% optimistic there (§10 status) |
+| 5 (in progress) | Historical adapters and validation | Reconstruction matches vendor snapshots; provenance on every result. So far: met on simulated LOBSTER files and on real Bitstamp BTC/USD order-level data (all 1,136 snapshots of a 19-minute recording), where the replay fill model was also checked against real fills (never optimistic). Equities: one Nasdaq BX ITCH day, consistent in every check (ITCH has no vendor snapshots), with the replay model never optimistic there either (§10 status) |
 | 6 | Server and dashboard | Sustains a live simulation at target update rate without blocking it |
 | 7 | Research report | Every claim tagged as simulation or historical evidence |

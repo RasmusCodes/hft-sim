@@ -32,13 +32,11 @@ def decompress(gz: Path) -> Path:
 
 def check(path: Path, replay: int = 8, levels: int = 10, sample: int = 200, symbols: list[str] | None = None) -> dict:
     """Run `hftsim itch-check` on an ITCH file (decompressing a `.gz` first)."""
-    from .runner import binary, build
+    from .runner import ensure_built
 
     raw = decompress(path) if path.suffix == ".gz" else path
-    if not binary().exists():
-        build()
     venue = "Nasdaq BX" if "BX_ITCH" in raw.name else "Nasdaq PSX" if "PSX_ITCH" in raw.name else "Nasdaq"
-    args = [str(binary()), "itch-check", str(raw), "--replay", str(replay), "--levels", str(levels), "--sample", str(sample),
+    args = [str(ensure_built()), "itch-check", str(raw), "--replay", str(replay), "--levels", str(levels), "--sample", str(sample),
             "--source", f"{venue} TotalView-ITCH 5.0 sample day from emi.nasdaq.com/ITCH/", "--date", raw.name[:8]]
     if symbols:
         args += ["--symbols", ",".join(symbols)]

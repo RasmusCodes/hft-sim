@@ -139,6 +139,8 @@ $mutants = @(
   @('D20', 'data', $DR, 'if !reaches || o.entry_ns >= tk.ts_ns ||', 'if !reaches || o.entry_ns > tk.ts_ns ||', 'an order entered in the taker''s own stamp gets its remainder'),
   @('D21', 'data', $DR, 'Side::Buy => l.price < m.price && l.price >= limit,', 'Side::Buy => l.price < m.price,', 'the counterfactual re-matches bids beyond the taker''s limit'),
   @('D22', 'data', $DR, 'extra.push(TakerRemainder { ts_ns: ts, id: taker, side, limit, available: left });', 'let _ = (ts, taker, side, limit);', 'the counterfactual drops what stays with the taker'),
+  @('D23', 'data', $DR, 'Kind::ExecuteVisible if off_price => {', 'Kind::ExecuteVisible if off_price && false => {', 'an execution away from the order''s own price is read as one at it'),
+  @('D24', 'data', $DR, 'Some(x) if x <= m.ts_ns => {', 'Some(x) if x < m.ts_ns => {', 'a copy still sees the stamp it was cancelled in'),
   @('L01', 'data', $D3, 'Side::Buy => (-price, id),', 'Side::Buy => (price, id),', 'L3 bids ranked worst first'),
   @('L02', 'data', $D3, 'is_none_or(|l| l.created.is_none() && l.first >= j)', 'is_none_or(|l| l.first >= j)', 'a snapshot may reveal an order the stream creates later'),
   @('L03', 'data', $D3, '!shown.contains(&id) && lives.untouched(id, retire_before))', '!shown.contains(&id) && lives.untouched(id, add_before))', 'orders the stream deletes within the window are retired by the snapshot'),
@@ -157,10 +159,11 @@ $mutants = @(
   @('I04', 'data', $DI, 'Some(&f) if f != oref => {', 'Some(&f) if f == oref => {', 'arrival-order check flags executions at the front'),
   @('I05', 'data', $DI, '(Some(b), Some(a)) if b >= a)', '(Some(b), Some(a)) if b > a)', 'a locked ITCH book is not counted as crossed'),
   @('I06', 'data', $DI, 'origin: o.origin, how,', 'origin: c.messages, how,', 'a replacement forgets its original order''s arrival'),
-  @('I07', 'data', $DI, 'kind: Kind::ExecuteVisible, order_id: oref as i64, size: i64::from(take), price: i64::from(o.price),', 'kind: Kind::ExecuteVisible, order_id: oref as i64, size: i64::from(take), price: i64::from(px),', 'an execution with a price is exported at its printed price'),
+  @('I07', 'data', $DI, 'kind: Kind::ExecuteVisible, order_id: oref as i64, size: i64::from(take), price: i64::from(px),', 'kind: Kind::ExecuteVisible, order_id: oref as i64, size: i64::from(take), price: i64::from(o.price),', 'an execution at a non-displayed price is exported at the displayed price'),
   @('I08', 'data', $DI, 'c.locate_mismatches += u64::from(o.locate != rec.locate);', 'c.locate_mismatches += u64::from(o.locate != o.locate);', 'an execution under another stock is not flagged'),
   @('I09', 'data', $DI, 'c.out_of_order += u64::from(rec.ts_ns < last_ts);', 'c.out_of_order += u64::from(rec.ts_ns < c.first_ns);', 'timestamps compared with the first, not the latest'),
-  @('I10', 'data', $DI, 'if orders.insert(oref, order).is_some() {', 'if orders.insert(oref, order).is_some() && false {', 'duplicate order references never counted')
+  @('I10', 'data', $DI, 'if orders.insert(oref, order).is_some() {', 'if orders.insert(oref, order).is_some() && false {', 'duplicate order references never counted'),
+  @('I11', 'data', $DI, 'Some(&f) if f != oref && off_display => c.priority.off_display_ahead_of_older += 1,', 'Some(&f) if f != oref && off_display && false => c.priority.off_display_ahead_of_older += 1,', 'executions at a non-displayed price counted as queue jumps')
 )
 
 $summary = @()

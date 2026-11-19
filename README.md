@@ -49,9 +49,10 @@ so far:
     * The check also found and fixed an optimistic trade-through rule.
   * **a real equity day from Nasdaq's ITCH 5.0 feed** (Nasdaq BX, 2019-12-30: 29.2 million
     messages, 8,906 stocks). Every consistency check passes, and an independent rebuild agrees
-    after 1.6 million messages. 0.2% of BX's executions break arrival order (cause not
-    identified), so there the replay fill model is nearly, not strictly, conservative: 0.08% false
-    fills on 801,154 orders.
+    after 1.6 million messages. Every execution at a displayed price followed arrival order. The
+    apparent exceptions (0.2%) were orders BX ranks at a better price than it displays (its Price
+    to Comply rule). With two replay rules that came out of this, the replay fill model is never
+    optimistic on 801,154 real orders.
 
   No real LOBSTER file has been validated: LOBSTER's samples now need an academic application.
   Hybrid replay and the Databento adapter are not built
@@ -207,8 +208,8 @@ Generated reports replace the proposed notebooks, and Python-written agents are 
 
 ## Evidence
 
-211 Rust tests pass (`cargo test --offline`), plus one slow acceptance test run with `--ignored`,
-and there are no compiler warnings. 25 Python tests pass (`python -m unittest discover -s tests`
+213 Rust tests pass (`cargo test --offline`), plus one slow acceptance test run with `--ignored`,
+and there are no compiler warnings. 27 Python tests pass (`python -m unittest discover -s tests`
 in `python/`). Four of them need the native extension and pyarrow and are skipped without them.
 Details in [docs/TESTING.md](docs/TESTING.md) and [docs/BENCHMARKS.md](docs/BENCHMARKS.md).
 
@@ -270,13 +271,19 @@ Details in [docs/TESTING.md](docs/TESTING.md) and [docs/BENCHMARKS.md](docs/BENC
   * a Nasdaq BX ITCH day (29.2 million messages): each message type's length matches its layout,
     and the book rebuild finds no unknown or reused reference, stock mismatch, oversize execution,
     backward timestamp or crossed book. The best 10 levels agree with LOBSTER's independent
-    rebuild after 1,608,422 messages;
-  * mutation testing: all 44 planted data bugs caught. 22 are in the LOBSTER reader and the
-    replay model (including its leave-one-out check, taker-remainder rule and counterfactual),
-    two of them only after the test gaps they exposed were closed. 12 are in the order-level
-    check, one of them only by a test added while the mutant was written. 10 are in the ITCH
-    reader, 4 of them caught only by a test written first, because no earlier test made those
-    inconsistencies happen.
+    rebuild after 1,608,422 messages. Every execution at a displayed price was of the oldest order
+    at that price;
+  * the replay fill model, run leave-one-out on 801,154 BX orders, filled none of the 710,970
+    that never traded, and no order earlier or for more than it really filled. That took two
+    corrections the check prompted: executions at a non-displayed price no longer count as the
+    displayed queue trading, and a copy no longer sees the nanosecond its original was cancelled
+    in;
+  * mutation testing: all 47 planted data bugs caught. 24 are in the LOBSTER reader and the
+    replay model (including its leave-one-out check, taker-remainder rule, counterfactual and the
+    two rules from the ITCH day), two of them only after the test gaps they exposed were closed.
+    12 are in the order-level check, one of them only by a test added while the mutant was
+    written. 11 are in the ITCH reader, 4 of them caught only by a test written first, because no
+    earlier test made those inconsistencies happen.
 * **Engine performance** (Ryzen AI 7 PRO 350 laptop):
   * about 8.6 M messages/s with ~1,000 resting orders and 2.4 M messages/s with ~190,000;
   * median 120–420 ns per message, p99 0.27–1.1 µs;
@@ -415,7 +422,7 @@ $env:LOB_FUZZ_SEEDS=1500; $env:LOB_FUZZ_STEPS=4000; cargo test --release --offli
 powershell -File tools\mutation_test.ps1
 ```
 
-(About an hour for all 129 mutants; `-Only lob|sim|agents|mm|metrics|data` or `-Ids A13,S02` for
+(About an hour for all 132 mutants; `-Only lob|sim|agents|mm|metrics|data` or `-Ids A13,S02` for
 a subset.)
 
 ## Layout

@@ -13,9 +13,10 @@ replays hypothetical orders under an explicit queue model. The `hftsim` binary e
   snapshots") for one venue and one window.
 * **Real equity data: Nasdaq BX ITCH (§7).** One sample day (2019-12-30: 29.2 million messages,
   8,906 stocks) passes every consistency check, and an independent rebuild agrees with it after
-  1.6 million messages. On it the replay fill model is nearly, not strictly, conservative: 0.08%
-  false fills. The cause is that 0.2% of BX's executions break arrival order, and why was not
-  identified.
+  1.6 million messages. Every execution at a displayed price followed arrival order. The apparent
+  exceptions were orders BX ranks at a better price than it displays (its Price to Comply rule).
+  With the two replay rules that came out of this, the replay fill model is never optimistic on
+  801,154 real orders: no false, early or excess fill.
 * **LOBSTER: built, never run on a real file.** The adapter, reconstruction, provenance and
   pure-replay fill model are tested only on simulated sessions written in LOBSTER's format.
   LOBSTER no longer offers anonymous samples (§8).
@@ -117,8 +118,11 @@ orders' resting state and no participant identities, and nothing before the star
 hypothetical resting order have filled? The historical market cannot react to it (ARCHITECTURE
 §10 mode a), so a FIFO queue model with conservative rules decides (RISKS K3):
 
-* **Joining.** The order joins the back of its level after every message stamped at or before
-  its entry. Everything resting there is ahead of it, including unknown pre-existing orders.
+* **Joining and leaving.** The order joins the back of its level after every message stamped at
+  or before its entry. Everything resting there is ahead of it, including unknown pre-existing
+  orders. An order with an expiry leaves before every message stamped at or after it, so the
+  stamp it was cancelled in is unseen, like the stamp it entered in. (Until 2026-11-19 it saw
+  that stamp, which produced false fills on ITCH data, whose timestamps tie; §7.)
 * **Cancellations.** Cancellations of orders ahead move it up; those behind do nothing.
 * **Executions at its price.** An execution of an order ahead (or of an unknown, pre-existing
   order) only shortens the queue. An execution of an order that joined behind it is volume that
@@ -132,6 +136,10 @@ hypothetical resting order have filled? The historical market cannot react to it
   A taker that ended with volume unfilled at its limit had exhausted every resting order it
   could reach. An order resting within that limit, entered before the taker's stamp, gets up to
   that volume. Whoever supplies the takers must check that premise (§6).
+* **Executions away from the order's own price.** An execution at a price other than the
+  executed order's displayed one comes from an order ranked at a non-displayed price (Nasdaq's
+  Price to Comply; ITCH "executed with price"). That order's shares leave the queue, but nothing
+  traded at the displayed price, so like a hidden execution it fills nothing (§7).
 * **Never.** Hidden executions and crosses never fill it, and an order that would cross the
   book on entry is flagged as marketable, not filled.
 
@@ -160,6 +168,9 @@ probes that place an order every 300 ms on average with a 3 s life.
 | default | 5 shares | 863 | 795 | 6 | **0** | 62 | 0 | 30 ms / 194 ms | 0 |
 | zero intelligence | 1 share | 979 | 917 | 0 | **0** | 62 | 502 | 10 ms / 78 ms | 502 |
 | zero intelligence | 5 shares | 888 | 813 | 11 | **0** | 64 | 0 | 20 ms / 155 ms | 0 |
+
+Rerun on 2026-11-19 with the leaving rule and the rule for executions away from an order's own
+price: every number is unchanged.
 
 In every configuration the model filled no probe that the exchange left unfilled, and none
 earlier than the exchange. It found *every* fill that a stream without the probe can show at the
@@ -503,16 +514,30 @@ Replay assumes price-time priority: at one price, orders fill in the order they 
 lets that be checked directly. For every visible execution, was the executed order the oldest at
 its level? Here a replacement counts as a new order.
 
-* **Oldest at its level:** 580,281 executions (99.79%).
-* **A newer order passing an older one** that stayed on the book: 1,244 executions (0.21%). Of
-  those, 1,143 were plain adds and 101 replacements.
-* **Neither obvious explanation fits.**
-  * If replacements kept the replaced order's place, they would explain 20 of the 1,244.
-  * The order passed over was an odd lot in only 195 of them.
+* **At a displayed price: always.** All 578,839 executions reported at the order's displayed
+  price (`E`) were of the oldest order at that price. None passed an older one.
+* **At another price: one increment better, every time.** 2,686 executions (`C`, "executed with
+  price") happened at a price other than the order's displayed one. Each was exactly one minimum
+  increment better for the other side:
+  * buys traded a cent above their displayed price (1,315), and sells a cent below (1,337);
+  * in stocks under $1, one hundredth of a cent (34).
 
-The cause was not identified. BX's rulebook was not checked; candidates are order types that
-restrict what they trade against, and self-trade prevention. Most of the examples are in
-volatility products (UVXY, VXX).
+  None of these orders carried an attribution, and every execution was printable.
+* **That is BX's Price to Comply rule.** An order that would lock or cross another market's
+  protected quote is displayed one increment away, and ranked, non-displayed, at the quote's own
+  price. Post-Only orders without attribution are adjusted the same way. The source is BX Rule
+  4702(b)(1)(A) as described in the SEC's 2016 approval order (RESEARCH_SURVEY A2). Such an order
+  outranks the displayed queue at its displayed price, because its real price is better.
+* **The apparent queue jumps were all of this kind.** 1,244 of the `C` executions (0.2% of all
+  executions) happened while an older order was displayed at the same price. Read at displayed
+  prices, they look like a newer order passing an older one. The first version of this section
+  reported them as unexplained. None of the 629 orders passed over ever traded at a non-displayed
+  price themselves, so they were ranked where they were displayed.
+
+The check now counts executions at a non-displayed price apart. An independent Python pass over
+the raw file reproduced the earlier counts exactly (581,525 executions, 1,244 apparent jumps)
+and produced the breakdown above. The exact order type is inferred: ITCH does not carry it, but
+the data matches the rule in every execution and contradicts it in none.
 
 ### The replay fill model on equity orders
 
@@ -524,42 +549,55 @@ AMD, SPY, UVXY, INTC and NIO. Because ITCH names no taker:
 
 | Real outcome | Model | Orders |
 |---|---|---|
-| never filled | not filled | 710,431 |
-| never filled | **filled** | **539** (0.08%) |
-| filled | first fill **earlier** | **72** |
-| filled | first fill in the same nanosecond | 6,185 |
-| filled | first fill later: median 2.4 ms, p90 14 s | 81,985 |
-| filled | never filled | 1,942 |
+| never filled | not filled | 710,970 |
+| never filled | **filled** | **0** |
+| filled | first fill **earlier** | **0** |
+| filled | first fill in the same nanosecond | 6,181 |
+| filled | first fill later: median 2.4 ms, p90 15 s | 82,041 |
+| filled | never filled | 1,962 |
 
-553 copies were filled for more than their original traded before being cancelled. The model
-eventually filled 5.71 million of the 6.04 million shares really traded (95%).
+No copy was filled for more than its original traded. The model eventually filled 5.64 million of
+the 6.04 million shares really traded (93%).
 
-* **Not strictly conservative here.** For an order that never traded to get a model fill, history
-  must execute an order behind the copy, or trade through its price, while the copy rests. Those
-  are the queue jumps above. UVXY alone accounts for 377 of the 539. On BX, strict FIFO is a 99.8%
-  approximation, and the model inherits the remaining 0.2%.
-* **Late, but the volume arrives.** Only 7% of first fills land in the right nanosecond, yet 95% of
+* **Never optimistic, after two corrections.** The first version of this check found 539 false
+  fills (0.08% of never-filled orders), 72 early first fills and 553 overfills. Both causes were
+  in the replay, not in BX's matching:
+  * *Executions at a non-displayed price.* Written in LOBSTER form at the order's displayed price,
+    they looked like the queue at that price trading, so copies of the orders passed over filled.
+    They are now written at the price they traded at, and the model fills nothing from them
+    (§4). That removed 506 of the false fills, all 72 early fills and 518 of the overfills.
+  * *Ties within a nanosecond.* The other 33 false fills and 35 overfills all fell in the
+    nanosecond in which the original order was cancelled. A copy saw that stamp's later
+    messages, though the cancellation may have come first. A copy now leaves before the stamp it
+    was cancelled in (§4).
+
+  Neither rule changes anything on Bitstamp (§6) or in the simulator (§4): both were rerun.
+* **Late, but the volume arrives.** Only 7% of first fills land in the right nanosecond, yet 93% of
   the volume is eventually filled. Queues at a price are deeper than on Bitstamp, so later
-  executions of orders behind the copy reveal it: 4.26 million shares came that way and 1.46
+  executions of orders behind the copy reveal it: 4.17 million shares came that way and 1.47
   million through trade-throughs.
 * **The counterfactual helps little without the taker.** It was run on a sample of 1,584 filled
   orders, at most 200 per stock, evenly spaced. Only 13% of the removed orders' volume (11,599 of
   90,743 shares) could be re-matched to orders behind them at the same price; the rest needs the
-  taker's limit. First fills in the same nanosecond rose from 130 to 160.
+  taker's limit. First fills in the same nanosecond rose from 131 to 161.
 
 ### What this establishes, and what it does not
 
 It establishes:
 * the ITCH reader and book rebuild are consistent with the data in every check, and agree with an
   independent rebuild;
-* on BX equities the replay model is nearly conservative but not strictly: 0.08% false fills,
-  caused by the 0.2% of executions that break arrival order.
+* BX matched displayed orders in strict arrival order at their displayed price that day. Every
+  apparent exception was an order ranked at a better, non-displayed price, as BX's rules describe;
+* on BX equities the replay model is never optimistic: on 801,154 real orders, no false, early
+  or excess fill.
 
 It does not establish:
 * **The specification.** The field layouts are confirmed by lengths and consistency, not by the
   specification text.
 * **Other venues and days.** BX is a small Nasdaq venue, and this is one day.
-* **Why executions jump the queue.**
+* **LOBSTER's treatment of these executions.** If a LOBSTER file writes an execution at a
+  non-displayed price at the order's displayed price, the model cannot tell it apart, and the
+  false fills return (RISKS K28). Not checked: no real LOBSTER file has been read.
 * **Hidden orders and auctions.** Executions against non-displayed orders never fill a copy
   (conservative), and BX ran no crosses that day.
 * **Vendor snapshots.** ITCH has none; it is the exchange's own feed. The phase-5 criterion
@@ -575,7 +613,8 @@ It does not establish:
 * **Other adapters.** Not built:
   * Databento MBO (needs an account);
   * crypto L2.
-* **The queue jumps on BX** (§7): their cause, and a replay rule that accounts for them.
+* **How LOBSTER writes executions at a non-displayed price** (§7, RISKS K28): at the price they
+  traded at, or at the order's displayed price.
 * **Hybrid replay** (ARCHITECTURE §10 mode b). Historical flow replayed into the engine as orders,
   so live agents' fills come from the matching engine itself. Not built.
 * **Queue models for L2-only data**, which must assume where cancellations sit in the queue. The

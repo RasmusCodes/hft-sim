@@ -13,11 +13,14 @@ import json
 import os
 import subprocess
 import sys
+import threading
 from pathlib import Path
 from typing import Iterable
 
 REPO = Path(__file__).resolve().parents[2]
 CACHE = REPO / "python" / ".cache"
+_build_lock = threading.Lock()
+_built = False
 
 
 def binary() -> Path:
@@ -27,7 +30,25 @@ def binary() -> Path:
 
 def build() -> None:
     """Build the release binary (offline, no downloads)."""
-    subprocess.run(["cargo", "build", "--release", "--offline", "-p", "runner"], cwd=REPO, check=True)
+    subprocess.run(["cargo", "build", "--release", "--offline", "-q", "-p", "runner"], cwd=REPO, check=True)
+
+
+def ensure_built() -> Path:
+    """Build the release binary once per process and return its path. An existing binary is no
+    proof it matches the sources, so this always asks cargo, which rebuilds only what changed and
+    leaves an up-to-date binary untouched (the run cache, keyed on the binary, stays valid). Without
+    cargo, an existing binary is used with a warning."""
+    global _built
+    with _build_lock:
+        if not _built:
+            try:
+                build()
+            except FileNotFoundError:
+                if not binary().exists():
+                    raise
+                print("warning: cargo not found; using the existing hftsim binary, which may be older than the sources", file=sys.stderr)
+            _built = True
+    return binary()
 
 
 @dataclasses.dataclass(frozen=True)
@@ -110,8 +131,8 @@ def run_args(args: list[str], cache: bool = True, use_native: bool = False) -> d
     through the compiled extension, with the GIL released; the result is the same as the binary's."""
     if use_native and native() is None:
         raise RuntimeError("hftsim._native is not built: run `maturin develop --release` in python/")
-    if not use_native and not binary().exists():
-        build()
+    if not use_native:
+        ensure_built()
     path = CACHE / f"{_cache_key(args, use_native)}.json"
     if cache and path.exists():
         return json.loads(path.read_text(encoding="utf-8"))
@@ -141,8 +162,8 @@ def run_many(jobs: Iterable[tuple[Scenario, int]], workers: int | None = None, c
     """Run (scenario, seed) jobs in parallel (one process each, or one thread each with
     `use_native`); results come back in job order."""
     jobs = list(jobs)
-    if not use_native and not binary().exists():
-        build()
+    if not use_native:
+        ensure_built()
     workers = workers or max(1, (os.cpu_count() or 2) // 2)
     results: list[dict | None] = [None] * len(jobs)
     with cf.ThreadPoolExecutor(max_workers=workers) as pool:

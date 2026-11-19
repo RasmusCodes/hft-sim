@@ -383,7 +383,7 @@ not share the decomposition's code.
 | Decomposition on a full market (`agents/tests/metrics.rs`) | 1 integration | The calibrated background, a market maker and informed traders, with fees, over 20 s. For every agent (over 100 traded) and three horizons, the decomposition equals the ledger's PnL to the last fee unit, over the whole run and over (5 s, 20 s]. Position and volume match too |
 | Races end to end | 1 integration (agents), 1 kernel test extended | A maker's late cancel, refused at the gateway, is recorded in the gateway log and counted as the maker's race loss; the fast sniper wins and the slow one loses |
 | Runner (`crates/runner`) | 7 unit | Valid JSON (non-finite numbers as null); flags parsed and mistakes rejected; the same flags reproduce the run exactly, and another seed changes the digest; the config hash ignores flag order and the output path; the event export gives one row per event, with each kind's own fields and the order's side, in the documented event order; validity bitmaps are least-significant bit first; tables come from the same run (same digest), with one trade row per trade, two fills per trade, and participants by id |
-| Python layer (`python/tests`, `python -m unittest discover -s tests` from `python/`) | 10 | t quantiles against table values (df 1, 2, 7, 10, 30), mean and paired intervals by hand, Wilson bounds, a seeded bootstrap; `Scenario` defaults give the same digest as the binary's own defaults; repeated `--mm` flags and the decomposition identity through JSON; grids keep job order, and `verify` reproduces a digest; report formatting and the index |
+| Python layer (`python/tests`, `python -m unittest discover -s tests` from `python/`) | 12 | t quantiles against table values (df 1, 2, 7, 10, 30), mean and paired intervals by hand, Wilson bounds, a seeded bootstrap; `Scenario` defaults give the same digest as the binary's own defaults; repeated `--mm` flags and the decomposition identity through JSON; grids keep job order, and `verify` reproduces a digest; report formatting and the index. The binary is rebuilt once per process before use, even when one exists (added 2026-11-19, after an existing but outdated binary silently ran a check), and without cargo an existing one is used with a warning |
 | Native bindings (`python/tests/test_native.py`; skipped without the extension and pyarrow) | 4 | The in-process run equals the binary's run (manifest, market, agents) with fees, informed traders and arbitrageurs; bad flags raise; native runs in parallel threads reproduce the serial digests; the event table agrees with the report: trades, fills, the market maker's position and window fill count rebuilt from rows, maker-only liquidity, and the final mid from the book table; every table survives a Parquet round trip unchanged, dictionary types included |
 | Rebuilt binary against the reports | 8 runs | After the runner was split into a library (for the bindings), one run drawn from each report's manifests was re-run with the rebuilt binary: all 8 digests matched |
 | Reproducibility of every report | 1 run per report | Each generated report re-runs its first run without the cache and states whether the digest matched |
@@ -446,11 +446,11 @@ real LOBSTER file has been read ([HISTORICAL_DATA.md](HISTORICAL_DATA.md) §6–
 |---|---|---|
 | LOBSTER reading and writing (`data::lobster`) | 6 unit | The writer, fed by the real matching engine, maps each book event (a modify that cuts an order in place, an execution, a cancellation) to the right LOBSTER row and size, and reads back with every row matching. Times parse exactly to nanoseconds and round-trip; rows parse, and malformed ones are refused with their line number (unknown type, direction other than ±1, too few fields); empty levels are recognised by size; file names split into symbol, date, start, end, kind and levels. A hand-built day with an unknown opening book is rebuilt: row 1 reconciles 150 seed shares, every later row matches unaided, and the 2 events on unknown orders (90 shares) are counted. Contradictions that seeds cannot absorb are reported, a row-count mismatch is an error, and levels beyond the snapshot depth are not compared |
 | Provenance | 1 unit | FNV-1a against its reference vectors; JSON escaping of Windows paths; the provenance record's JSON |
-| Replay fill model (`data::replay`) | 10 unit | Hand-computed FIFO cases: fills only after the queue ahead is gone; cancellations ahead move the order up, those behind do not; a trade-through fills only what traded through (10 of a 50 order, not 50); expiry; the unknown opening book counts as ahead (with snapshots it is in the reported queue, and the fills are the same without them); an order that would cross is flagged, not filled. **Taker remainders:** a taker's unfilled 30 reach an earlier order within its limit, but not one beyond the limit, one entered in the taker's own stamp, or one cancelled within it. **Leave-one-out:** a copy never sees its original's messages, so it neither queues behind it nor fills from its executions. A hand-built stream with a FIFO violation in its history yields every class: same-stamp and later first fills, exchange only, model only, neither, overfilled, an order gone within its entry stamp, and the opening book left out. **Counterfactual:** a removed order's 10 go 4 to the order behind it, 5 to the next price within the taker's limit, none beyond the limit, and 1 stays with the taker; the rule then hands that 1 to the copy. Taker files parse |
+| Replay fill model (`data::replay`) | 12 unit | Hand-computed FIFO cases: fills only after the queue ahead is gone; cancellations ahead move the order up, those behind do not; a trade-through fills only what traded through (10 of a 50 order, not 50); expiry, and nothing seen in the stamp an order was cancelled in; an execution away from the executed order's own price (an order ranked at a non-displayed price) takes its shares out of the queue ahead and fills nothing, not even a copy resting at that price; the unknown opening book counts as ahead (with snapshots it is in the reported queue, and the fills are the same without them); an order that would cross is flagged, not filled. **Taker remainders:** a taker's unfilled 30 reach an earlier order within its limit, but not one beyond the limit, one entered in the taker's own stamp, or one cancelled within it. **Leave-one-out:** a copy never sees its original's messages, so it neither queues behind it nor fills from its executions. A hand-built stream with a FIFO violation in its history yields every class: same-stamp and later first fills, exchange only, model only, neither, overfilled, an order gone within its entry stamp, and the opening book left out. **Counterfactual:** a removed order's 10 go 4 to the order behind it, 5 to the next price within the taker's limit, none beyond the limit, and 1 stays with the taker; the rule then hands that 1 to the copy. Taker files parse |
 | Simulated days through LOBSTER files (`runner/tests/lobster.rs`) | 5 integration | **Directory check:** two days in nested folders are found, paired by name and checked, and an order-book file without its message file is listed as unpaired. **Round trip:** 165,052 rows, every row matched with no reconciliation, executions = trades, same digest as `hftsim run`. **Independent top of book:** the written best bid and ask equal `lob::MboBook`'s at every event time. **Mid-session start:** only row 1 reconciles; 99.999% of rows match unaided; nothing unexplained. **Replay against the exchange:** 330 probes, no fill the exchange did not make and none earlier, every visible fill found at the same nanosecond |
 | Python (`python/tests/test_lobster.py`) | 2 | Export a scenario, check it: every row matches, executions equal trades, provenance names the simulated symbol; the replay check from Python is never optimistic |
 | Order-level check (`data::l3`) | 12 unit | Hand-built streams. A hidden opening book is revealed by the first snapshot (explained), then snapshots are exact. Differences on orders the stream created are unexplained and classified (amount, price, extra), with the example JSON checked exactly. Events stamped at a snapshot's own time, or within one coarse stamp unit before it, cannot be ordered against it. A lagging snapshot is found by the offset search, also when it reveals an order at the same time, and the offset's start and end are both checked. A snapshot never reveals an order the stream creates later. A revealed order is retired only when the stream says nothing about it within the comparison, and one changed without an event is corrected. Priority within a price is checked, crossed books are timed from the first snapshot, and files parse |
-| ITCH 5.0 (`data::itch`) | 6 unit | Hand-built binary messages. Each layout parses to the right fields: add, replace, cross. A message too short for its type, or with a side other than B/S, is refused, and a wrong length is reported with its type. A day with adds, an execution, a cancel, a delete, a replace, an unknown reference and an unknown type is rebuilt with every count right. It is written in LOBSTER form and agrees with LOBSTER's rebuild after every message. Every other inconsistency the real day was checked for is made to happen once and counted: a reused order reference, an execution sent under another stock, a timestamp that goes back. An execution with its own printed price is exported at the resting order's price; a non-displayed trade is counted as hidden. Executions are checked against arrival order: a replacement's jump is explained by its origin, a plain add's is not. Crossed books are counted by session |
+| ITCH 5.0 (`data::itch`) | 6 unit | Hand-built binary messages. Each layout parses to the right fields: add, replace, cross. A message too short for its type, or with a side other than B/S, is refused, and a wrong length is reported with its type. A day with adds, an execution, a cancel, a delete, a replace, an unknown reference and an unknown type is rebuilt with every count right. It is written in LOBSTER form and agrees with LOBSTER's rebuild after every message. Every other inconsistency the real day was checked for is made to happen once and counted: a reused order reference, an execution sent under another stock, a timestamp that goes back. An execution at a price other than the displayed one (`C`) is exported at the price it traded at, and LOBSTER's rebuild still reduces the order at its own level; a non-displayed trade is counted as hidden. Executions are checked against arrival order: a replacement's jump is explained by its origin, a plain add's is not, and a newer order trading at a non-displayed price is counted apart, not as a jump. Crossed books are counted by session |
 | Python (`python/tests/test_itch.py`) | 2 | A gzipped hand-built day decompresses, and is reused on a second call; `hftsim itch-check` runs end to end (checks, cross-check, replay classes traced by hand). A corrupted gzip trailer fails its CRC check |
 | Python (`python/tests/test_bitstamp.py`) | 7 | WebSocket framing over a socket pair: text, long and fragmented messages, a ping answered with a masked pong, masked client frames, close raises. Exact unit conversion, finer digits refused. A synthetic recording converts and checks: a stop order left out, an event-id gap counted, a pre-recording order revealed. The break test catches each break on a synthetic recording. Crossings are classified by subtype and fate. The recording becomes LOBSTER messages row for row: an opening-book order, a partial maker fill and a cancel, an IOC taker that never rests, a rejected MOC, and a taker whose remainder rests. The fills and takers files are checked row for row, including the premise check. `hftsim replay-truth` then classifies the orders in all four variants, each traced by hand |
 
@@ -505,24 +505,31 @@ history minus the order, or rebuilt without it; with and without the taker-remai
   day.
 * **Independent rebuild:** for the 8 most-traded stocks, the best 10 levels agree with LOBSTER's
   rebuild after all 1,608,422 book-changing messages.
-* **Arrival order:** 99.79% of executions were of the oldest order at their level. 1,244 were not,
-  and the cause was not found.
-* **Replay, leave-one-out on 801,154 orders:** 539 false fills (0.08% of never-filled orders), 72
-  early first fills and 553 overfills, all needing such a queue jump. 95% of the real volume is
-  eventually found.
+* **Arrival order:** every one of the 578,839 executions at a displayed price was of the oldest
+  order at that price. The other 2,686 executions (`C`) were one increment better than displayed:
+  orders ranked at a non-displayed price under BX's Price to Comply rule. 1,244 of those passed an
+  older displayed order, and the first run reported them as unexplained queue jumps. An
+  independent Python pass over the raw file reproduces these counts.
+* **Replay, leave-one-out on 801,154 orders:** no false fill, no early first fill, no overfill.
+  93% of the real volume is eventually found. The first run had 539 false fills, 72 early first
+  fills and 553 overfills. The two corrections behind the change are tested (the replay row
+  above) and guarded by mutants D23 and D24. The same reruns left the Bitstamp results and the
+  simulator's probe table unchanged.
 
 ### Mutation testing (phase 5)
 
-`tools/mutation_test.ps1 -Only data` plants 44 bugs:
+`tools/mutation_test.ps1 -Only data` plants 47 bugs:
 * 12 in `data::lobster` and `data::replay` (D01–D12, 2026-11-17);
 * 5 in the leave-one-out check (D13–D17, 2026-11-18);
 * 5 in the trade-through cap, the taker-remainder rule and the counterfactual (D18–D22,
   2026-11-18);
 * 12 in `data::l3` (L01–L12, 2026-11-18);
-* 10 in `data::itch` (I01–I10, 2026-11-19).
+* 11 in `data::itch` (I01–I11, 2026-11-19);
+* 2 in the replay rules the ITCH day led to (D23–D24, 2026-11-19).
 
-For each one it runs the data suite and the simulated-day tests. **All 44 are caught**, D04 and
-D20 only after the gaps they exposed were closed:
+For each one it runs the data suite and the simulated-day tests. **All 47 are caught** (the whole
+group rerun on 2026-11-19 after those rules changed the replay code), D04 and D20 only after the
+gaps they exposed were closed:
 
 | | Mutation | Caught by |
 |---|---|---|
@@ -548,6 +555,8 @@ D20 only after the gaps they exposed were closed:
 | D20 | An order entered in the taker's own stamp gets its remainder | taker-remainder test (after D20 first survived) |
 | D21 | The counterfactual re-matches bids beyond the taker's limit | counterfactual (the order beyond the limit) |
 | D22 | The counterfactual drops what stays with the taker | counterfactual (the 1 the rule hands on) |
+| D23 | An execution away from the order's own price is read as one at it | away-from-own-price test (the copy at the ranked price fills too early) |
+| D24 | A copy still sees the stamp it was cancelled in | cancelled-stamp test |
 
 D04 survived the first run, and it was a real gap rather than an equivalent mutant. No simulated
 agent ever cuts an order in place, so the simulated days contain no partial cancellations, and
@@ -583,15 +592,21 @@ L12 is the D10 pattern again: the gap was found while writing the mutant, and th
 | I04 | The arrival-order check flags executions at the front | arrival order |
 | I05 | A locked book is not counted as crossed | crossed books by session |
 | I06 | A replacement forgets its original order's arrival | arrival order (the jump is no longer explained) |
-| I07 | An execution with a price is exported at its printed price | inconsistencies |
+| I07 | An execution at a non-displayed price is exported at the displayed price | inconsistencies |
 | I08 | An execution under another stock is not flagged | inconsistencies |
 | I09 | Timestamps compared with the first, not the latest | inconsistencies |
 | I10 | Reused order references never counted | inconsistencies |
+| I11 | Executions at a non-displayed price counted as queue jumps | arrival order |
 
 I07–I10 are caught only by the inconsistencies test, which was written before the run. While
 choosing these mutants I found that no test made a reused reference, a stock mismatch or a
 backward timestamp happen, or sent an execution with its own price. The real day's zero counts for
 those checks would have meant nothing if the counters were broken.
+
+I07 changed meaning on 2026-11-19. It first planted "exported at its printed price", which was
+then a bug; since the investigation of BX's queue jumps (HISTORICAL_DATA §7), exporting at the
+displayed price is the bug, and I07 plants that instead. D23, D24 and I11 guard the other
+changes from that investigation.
 
 ### What this does not establish (phase 5, part 1)
 
@@ -606,5 +621,6 @@ those checks would have meant nothing if the counters were broken.
   another venue's takers, could see a different share of fills through the blind spot.
 * **That the ITCH layouts match the specification text.** They match the data: lengths, and a
   rebuild without a single inconsistency.
-* **Why BX executes out of arrival order** in 0.2% of cases, or that the replay model is
-  conservative there. It is not, in 0.08% of never-filled orders.
+* **How LOBSTER files write executions at a non-displayed price.** Written at the displayed
+  price, the replay model could not tell them apart, and the false fills would return (RISKS
+  K28).

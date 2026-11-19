@@ -10,6 +10,6 @@ the same markets in-process (`use_native=True`), and with pyarrow `hftsim.arrow`
 event log, top of book and participants as tables or Parquet files (`python -m hftsim.export`).
 """
 
-from .runner import Scenario, binary, build, decomposition, market_makers, native, run, run_args, run_many, verify
+from .runner import Scenario, binary, build, decomposition, ensure_built, market_makers, native, run, run_args, run_many, verify
 
-__all__ = ["Scenario", "binary", "build", "decomposition", "market_makers", "native", "run", "run_args", "run_many", "verify"]
+__all__ = ["Scenario", "binary", "build", "decomposition", "ensure_built", "market_makers", "native", "run", "run_args", "run_many", "verify"]

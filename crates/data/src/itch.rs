@@ -13,6 +13,14 @@
 //!
 //! A day's file starts with an empty book, so no order is unknown at the start (unlike LOBSTER
 //! files or a live recording). Prices have 4 implied decimals, the same scale as LOBSTER's.
+//!
+//! **Displayed price and ranked price.** An order can be displayed at one price and ranked at a
+//! better, non-displayed one: a Price to Comply order that would lock or cross a protected
+//! quotation is displayed one increment away and ranked at the quotation's price (BX and Nasdaq
+//! Rule 4702(b)(1)(A); Post-Only orders that are not attributable are treated the same way). Its
+//! executions there arrive as `C` messages ("executed with price"). In LOBSTER form they carry
+//! the price they traded at (the rebuild still reduces the order at its own level), and the
+//! arrival-order check counts them apart, since they trade ahead of the displayed queue by price.
 
 use std::collections::{BTreeMap, HashMap, HashSet, VecDeque};
 use std::io::{self, Read};
@@ -202,11 +210,18 @@ struct Order {
 /// Which order the exchange executed at a price level, against arrival order. A replacement is
 /// a new order in [`read_file`]'s LOBSTER form; if the exchange kept the replaced order's place
 /// instead, executions of replacements would jump the queue, and each such jump would be
-/// explained by the replaced order's older origin.
+/// explained by the replaced order's older origin. Executions at a price other than the displayed
+/// one are counted apart (see the module documentation).
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
 pub struct Priority {
-    /// Executions of the order at the front of its level (by arrival, replacements counted as new).
+    /// Executions at the displayed price of the order at the front of its level (by arrival,
+    /// replacements counted as new).
     pub at_front: u64,
+    /// Executions at a price other than the displayed one (`C`), and of those, the ones made
+    /// while an older order was displayed at the same price.
+    pub off_display: u64,
+    /// See `off_display`.
+    pub off_display_ahead_of_older: u64,
     /// Executions of an order behind others, by how it came to be: added, replaced at the same
     /// price with fewer shares, replaced at the same price otherwise, replaced at a new price.
     pub jumps: [u64; 4],
@@ -392,6 +407,8 @@ pub fn read_file<R: Read>(reader: R, export: &HashSet<u16>, levels: usize) -> io
         let ts = rec.ts_ns;
         let mut out: Vec<Message> = Vec::new();
         let mut touched: Option<u16> = None;
+        // The displayed level an order left or shrank at, if any.
+        let mut left_level: Option<(Side, u32)> = None;
         // Look up a live order, checking that it belongs to this message's stock.
         let known = |oref: u64, c: &mut ItchCheck| -> Option<Order> {
             match orders.get(&oref) {
@@ -444,12 +461,15 @@ pub fn read_file<R: Read>(reader: R, export: &HashSet<u16>, levels: usize) -> io
                     s.executed_shares += u64::from(shares);
                     let px = if let Itch::ExecutedPrice { price, .. } = rec.msg { price } else { o.price };
                     s.price_range = if s.executions == 1 { (px, px) } else { (s.price_range.0.min(px), s.price_range.1.max(px)) };
+                    let off_display = px != o.price;
+                    c.priority.off_display += u64::from(off_display);
                     // Was it the first order at its level, by arrival?
                     if let Some(q) = fifo.get_mut(&(o.locate, idx(o.side), o.price)) {
                         while q.front().is_some_and(|f| orders.get(f).is_none_or(|x| x.price != o.price || x.locate != o.locate)) {
                             q.pop_front();
                         }
                         match q.front() {
+                            Some(&f) if f != oref && off_display => c.priority.off_display_ahead_of_older += 1,
                             Some(&f) if f != oref => {
                                 let (k, front) = (o.how as usize, orders[&f]);
                                 let pr = &mut c.priority;
@@ -478,14 +498,18 @@ pub fn read_file<R: Read>(reader: R, export: &HashSet<u16>, levels: usize) -> io
                                     ));
                                 }
                             }
+                            _ if off_display => {}
                             _ => c.priority.at_front += 1,
                         }
                     }
                     books.entry(o.locate).or_default().change(o.side, o.price, -i64::from(take));
-                    // In LOBSTER form an execution is at the resting order's level.
-                    out.push(Message { ts_ns: ts, kind: Kind::ExecuteVisible, order_id: oref as i64, size: i64::from(take), price: i64::from(o.price), side: o.side });
+                    // In LOBSTER form an execution carries the price it traded at; LOBSTER's
+                    // rebuild reduces the order at its own level, and the replay model reads an
+                    // execution away from that level as one at a non-displayed price.
+                    out.push(Message { ts_ns: ts, kind: Kind::ExecuteVisible, order_id: oref as i64, size: i64::from(take), price: i64::from(px), side: o.side });
                     reduce(&mut orders, oref, take);
                     touched = Some(o.locate);
+                    left_level = Some((o.side, o.price));
                 }
             }
             Itch::Cancel { oref, shares } => {
@@ -496,6 +520,7 @@ pub fn read_file<R: Read>(reader: R, export: &HashSet<u16>, levels: usize) -> io
                     out.push(Message { ts_ns: ts, kind: Kind::Cancel, order_id: oref as i64, size: i64::from(take), price: i64::from(o.price), side: o.side });
                     reduce(&mut orders, oref, take);
                     touched = Some(o.locate);
+                    left_level = Some((o.side, o.price));
                 }
             }
             Itch::Delete { oref } => {
@@ -504,6 +529,7 @@ pub fn read_file<R: Read>(reader: R, export: &HashSet<u16>, levels: usize) -> io
                     out.push(Message { ts_ns: ts, kind: Kind::Delete, order_id: oref as i64, size: i64::from(o.shares), price: i64::from(o.price), side: o.side });
                     orders.remove(&oref);
                     touched = Some(o.locate);
+                    left_level = Some((o.side, o.price));
                 }
             }
             Itch::Replace { old, new, shares, price } => {
@@ -526,6 +552,7 @@ pub fn read_file<R: Read>(reader: R, export: &HashSet<u16>, levels: usize) -> io
                     out.push(Message { ts_ns: ts, kind: Kind::Submit, order_id: new as i64, size: i64::from(shares), price: i64::from(price), side: o.side });
                     c.per_stock.entry(o.locate).or_default().adds += 1;
                     touched = Some(o.locate);
+                    left_level = Some((o.side, o.price));
                 }
             }
             Itch::Trade { side, shares, price, .. } => {
@@ -541,12 +568,9 @@ pub fn read_file<R: Read>(reader: R, export: &HashSet<u16>, levels: usize) -> io
         }
         c.per_stock.entry(rec.locate).or_default().messages += 1;
         // A level that emptied takes its arrival queue with it.
-        for m in &out {
-            if matches!(m.kind, Kind::ExecuteVisible | Kind::Cancel | Kind::Delete) {
-                let (l, s, p) = (touched.unwrap_or(rec.locate), idx(m.side), m.price as u32);
-                if !books.get(&l).is_some_and(|b| b.sides[s].contains_key(&p)) {
-                    fifo.remove(&(l, s, p));
-                }
+        if let (Some(l), Some((side, p))) = (touched, left_level) {
+            if !books.get(&l).is_some_and(|b| b.sides[idx(side)].contains_key(&p)) {
+                fifo.remove(&(l, idx(side), p));
             }
         }
         if let Some(l) = touched {
@@ -612,9 +636,11 @@ impl ItchCheck {
         let per = |v: &[u64; 4]| kinds.iter().zip(v).map(|(k, n)| format!("\"{k}\":{n}")).collect::<Vec<_>>().join(",");
         let pr = &self.priority;
         let priority = format!(
-            "{{\"executions_at_front\":{},\"queue_jumps\":{{{}}},\"jumps_explained_by_origin\":{{{}}},\
+            "{{\"executions_at_front\":{},\"executions_off_display\":{},\"off_display_ahead_of_older\":{},\"queue_jumps\":{{{}}},\"jumps_explained_by_origin\":{{{}}},\
              \"front_odd_lot\":{},\"jumper_odd_lot\":{},\"both_attributed\":{},\"examples\":[{}]}}",
             pr.at_front,
+            pr.off_display,
+            pr.off_display_ahead_of_older,
             per(&pr.jumps),
             per(&pr.explained),
             pr.front_odd_lot,
@@ -696,6 +722,16 @@ mod tests {
         v.extend_from_slice(&oref.to_be_bytes());
         v.extend_from_slice(&shares.to_be_bytes());
         v.extend_from_slice(&m.to_be_bytes());
+        v
+    }
+
+    fn exec_at(locate: u16, ts: u64, oref: u64, shares: u32, m: u64, price: u32) -> Vec<u8> {
+        let mut v = header(b'C', locate, ts);
+        v.extend_from_slice(&oref.to_be_bytes());
+        v.extend_from_slice(&shares.to_be_bytes());
+        v.extend_from_slice(&m.to_be_bytes());
+        v.push(b'Y');
+        v.extend_from_slice(&price.to_be_bytes());
         v
     }
 
@@ -787,14 +823,12 @@ mod tests {
     }
 
     #[test]
-    fn every_inconsistency_is_counted_and_executions_keep_the_orders_price() {
-        // An execution with a price (C) on order 1, printed a cent above it; an execution sent
-        // under stock 1 for stock 2's order, stamped before the message ahead of it; a second add
-        // reusing order 2's reference while order 2 still rests; a non-displayed trade (P).
-        let mut c_msg = header(b'C', 1, 30);
-        for v in [1u64.to_be_bytes().to_vec(), 40u32.to_be_bytes().to_vec(), 7u64.to_be_bytes().to_vec(), vec![b'Y'], 1_000_100u32.to_be_bytes().to_vec()] {
-            c_msg.extend_from_slice(&v);
-        }
+    fn every_inconsistency_is_counted_and_executions_carry_their_traded_price() {
+        // An execution with a price (C) on order 1, a cent above its displayed bid (it was ranked
+        // there); an execution sent under stock 1 for stock 2's order, stamped before the message
+        // ahead of it; a second add reusing order 2's reference while order 2 still rests; a
+        // non-displayed trade (P).
+        let c_msg = exec_at(1, 30, 1, 40, 7, 1_000_100);
         let mut p_msg = header(b'P', 1, 50);
         for v in [0u64.to_be_bytes().to_vec(), vec![b'B'], 300u32.to_be_bytes().to_vec(), sym("A").to_vec(), 1_000_000u32.to_be_bytes().to_vec(), 9u64.to_be_bytes().to_vec()] {
             p_msg.extend_from_slice(&v);
@@ -813,11 +847,13 @@ mod tests {
         assert_eq!((c.duplicate_refs, c.locate_mismatches, c.out_of_order), (1, 1, 1));
         assert_eq!((c.executed_shares, c.hidden_shares, c.live_at_end), (50, 300, 2));
         assert_eq!(c.per_stock[&1].price_range, (1_000_100, 1_000_100), "stock statistics use the printed price");
-        // In LOBSTER form the execution is at the resting order's own price.
+        assert_eq!((c.priority.at_front, c.priority.off_display, c.priority.off_display_ahead_of_older), (1, 1, 0), "order 2 at the front; order 1 traded at a price it did not display");
+        // In LOBSTER form the execution carries the price it traded at, and LOBSTER's rebuild
+        // still reduces order 1 at its own level (the cross-check).
         let rows: Vec<(Kind, i64, i64, i64)> = p.exported[&1].iter().map(|m| (m.kind, m.order_id, m.size, m.price)).collect();
         assert_eq!(
             rows,
-            vec![(Kind::Submit, 1, 100, 1_000_000), (Kind::ExecuteVisible, 1, 40, 1_000_000), (Kind::Submit, 2, 10, 1_000_000), (Kind::ExecuteHidden, 0, 300, 1_000_000)]
+            vec![(Kind::Submit, 1, 100, 1_000_000), (Kind::ExecuteVisible, 1, 40, 1_000_100), (Kind::Submit, 2, 10, 1_000_000), (Kind::ExecuteHidden, 0, 300, 1_000_000)]
         );
         assert_eq!((p.cross_compared, p.cross_mismatches), (3, 0));
     }
@@ -826,8 +862,9 @@ mod tests {
     fn executions_are_checked_against_arrival_order() {
         // Bids 1, 2 and later 4 at $10.00. Order 1 is replaced by 3 (same price, fewer shares),
         // which then executes while 2 still rests: a jump its origin (order 1) explains. Then 4,
-        // a plain add, executes while 2 still rests: a jump nothing explains. Last, 2 executes
-        // at the front.
+        // a plain add, executes while 2 still rests: a jump nothing explains. Then 2 executes at
+        // the front. Last, 5 and 6 rest at $100.00 and 6 trades at $100.01, a price it was ranked
+        // at but did not display: ahead of 5 by price, so not a jump; then 5 trades there too.
         let mut u = header(b'U', 1, 30);
         for v in [1u64.to_be_bytes().to_vec(), 3u64.to_be_bytes().to_vec(), 60u32.to_be_bytes().to_vec(), 1_000_000u32.to_be_bytes().to_vec()] {
             u.extend_from_slice(&v);
@@ -840,10 +877,15 @@ mod tests {
             add(1, 50, 4, b'B', 10, "A", 1_000_000),
             exec(1, 60, 4, 10, 2),
             exec(1, 70, 2, 100, 3),
+            add(1, 80, 5, b'B', 100, "A", 1_000_000),
+            add(1, 85, 6, b'B', 100, "A", 1_000_000),
+            exec_at(1, 90, 6, 100, 4, 1_000_100),
+            exec_at(1, 95, 5, 100, 5, 1_000_100),
         ];
         let p = read_file(&file(&msgs)[..], &HashSet::new(), 10).expect("reads");
         let pr = &p.check.priority;
         assert_eq!((pr.at_front, pr.jumps, pr.explained), (1, [1, 1, 0, 0], [0, 1, 0, 0]));
+        assert_eq!((pr.off_display, pr.off_display_ahead_of_older), (2, 1));
         assert_eq!((pr.front_odd_lot, pr.jumper_odd_lot, pr.both_attributed, pr.examples.len()), (0, 2, 0, 2), "both jumpers below a 100-share lot");
         assert!(p.check.to_json(1).contains("\"queue_jumps\":{\"added\":1,\"replaced_same_price_fewer_shares\":1,"));
     }

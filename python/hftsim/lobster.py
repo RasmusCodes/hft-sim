@@ -17,13 +17,11 @@ import json
 import subprocess
 from pathlib import Path
 
-from .runner import Scenario, binary, build
+from .runner import Scenario, ensure_built
 
 
 def _call(args: list[str]) -> dict:
-    if not binary().exists():
-        build()
-    proc = subprocess.run([str(binary()), *args], capture_output=True, text=True)
+    proc = subprocess.run([str(ensure_built()), *args], capture_output=True, text=True)
     if proc.returncode != 0:
         raise RuntimeError(f"hftsim failed ({proc.returncode}): {proc.stderr.strip()}")
     return json.loads(proc.stdout)

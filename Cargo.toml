@@ -1,0 +1,23 @@
+[workspace]
+resolver = "3"
+members = ["crates/lob", "crates/sim", "crates/agents", "crates/analysis", "crates/data", "crates/runner"]
+
+[workspace.package]
+version = "0.1.0"
+edition = "2024"
+rust-version = "1.85"
+
+[profile.release]
+opt-level = 3
+codegen-units = 1
+lto = "thin"
+debug = "line-tables-only"
+incremental = false
+
+[profile.bench]
+inherits = "release"
+
+# Tests run optimised (the differential fuzzer pushes millions of commands through a
+# deliberately slow reference model) but keep debug assertions and overflow checks.
+[profile.test]
+opt-level = 2

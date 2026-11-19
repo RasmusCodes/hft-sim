@@ -1,0 +1,24 @@
+[package]
+name = "hftsim-native"
+description = "Python bindings for hft-sim (module hftsim._native), built with maturin from python/"
+version = "0.1.0"
+edition = "2021"
+publish = false
+
+[lib]
+name = "hftsim_native"
+crate-type = ["cdylib"]
+
+[dependencies]
+runner = { path = "../../crates/runner" }
+pyo3 = { version = "0.25", features = ["abi3-py310"] }
+
+[profile.release]
+opt-level = 3
+codegen-units = 1
+lto = "thin"
+debug = false
+
+# A workspace of its own: the core workspace (hft-sim/Cargo.toml) stays free of external
+# dependencies and keeps building offline; only this crate needs PyO3.
+[workspace]

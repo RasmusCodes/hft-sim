@@ -1,0 +1,4 @@
+# Optional: the PyO3 bindings and Parquet export (hftsim.arrow, hftsim.export).
+# The hftsim package itself needs only the Python standard library.
+maturin==1.16.0
+pyarrow==26.0.1

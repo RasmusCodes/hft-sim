@@ -7,6 +7,10 @@
 //!   unknown orders (seeds), which entered before the file starts. An order with an expiry
 //!   leaves before every message stamped at or after it, so neither the stamp it entered in nor
 //!   the one it was cancelled in is seen;
+//! * an order shown after it joined, but received before it, ranks ahead of it. Where order ids
+//!   follow receipt, as Nasdaq's reference numbers do, an id lower than the order's own (or, for
+//!   a hypothetical order, lower than the highest id seen when it joined) means received
+//!   earlier; Nasdaq shows orders entered before the open only when it opens;
 //! * cancellations and deletions of orders ahead move it up; those of orders behind do nothing;
 //! * an execution at its price of an order ahead (or of an unknown, pre-existing order) only
 //!   shortens the queue ahead. An execution of an order that joined *behind* it is volume that
@@ -22,12 +26,14 @@
 //!   but did not display (Nasdaq's Price to Comply orders, ITCH `C` messages). Those shares leave
 //!   the displayed queue, but nothing traded at the displayed price, so like a hidden execution
 //!   it fills nothing;
-//! * hidden executions and crosses never fill it, and it never changes the historical book.
+//! * hidden executions and crosses never fill it, nor does an execution stamped at a cross (an
+//!   auction's execution of a resting order: an auction does not follow the queue). It never
+//!   changes the historical book.
 //!
 //! An order that would cross the book on entry is marketable, not passive; it gets no fills here
 //! (that needs an impact model) and is flagged.
 
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 
 use lob::Side;
 
@@ -130,6 +136,8 @@ struct Active {
     ahead: HashMap<i64, i64>,
     seed_ahead: i64,
     left: i64,
+    /// Orders with a lower id were received before this one (see the module documentation).
+    ref_id: i64,
 }
 
 /// Replay `orders` through `messages`. With `snapshots` (one per message, the vendor's book after
@@ -177,6 +185,10 @@ pub fn replay_passive_with(messages: &[Message], snapshots: Option<&[Snapshot]>,
     let mut active: Vec<Active> = Vec::new();
     let mut book = Rebuilder::new();
     let mut next_taker = 0;
+    // Executions stamped at a cross belong to that auction (see the module documentation).
+    let cross_stamps: HashSet<i64> = messages.iter().filter(|m| m.kind == Kind::Cross).map(|m| m.ts_ns).collect();
+    // The highest order id submitted so far: a hypothetical order's place in receipt order.
+    let mut max_id = i64::MIN;
     for (j, m) in messages.iter().enumerate() {
         // Orders whose entry time has passed join now, behind everything resting.
         while let Some(&k) = pending.peek() {
@@ -198,7 +210,7 @@ pub fn replay_passive_with(messages: &[Message], snapshots: Option<&[Snapshot]>,
             let ahead: HashMap<i64, i64> = book.orders_at(o.side, o.price).into_iter().filter(|&(id, _)| Some(id) != o.own_order_id).collect();
             let seed_ahead = book.seed_at(o.side, o.price);
             out[k].queue_ahead = ahead.values().sum::<i64>() + seed_ahead;
-            active.push(Active { k, ahead, seed_ahead, left: o.size });
+            active.push(Active { k, ahead, seed_ahead, left: o.size, ref_id: o.own_order_id.unwrap_or(max_id) });
         }
         // Takers whose stamp is complete.
         while next_taker < takers.len() && takers[next_taker].ts_ns < m.ts_ns {
@@ -215,13 +227,19 @@ pub fn replay_passive_with(messages: &[Message], snapshots: Option<&[Snapshot]>,
         });
         // An execution away from the executed order's own price (see the module documentation).
         let off_price = m.kind == Kind::ExecuteVisible && book.price_of(m.order_id).is_some_and(|p| p != m.price);
+        let in_cross = m.kind == Kind::ExecuteVisible && cross_stamps.contains(&m.ts_ns);
         for a in &mut active {
             let o = orders[a.k];
             if m.side != o.side || Some(m.order_id) == o.own_order_id {
                 continue;
             }
             let fill = match m.kind {
-                Kind::ExecuteVisible if off_price => {
+                Kind::Submit if m.price == o.price && m.order_id < a.ref_id => {
+                    // Received before ours, shown only now: it ranks ahead.
+                    a.ahead.insert(m.order_id, m.size);
+                    None
+                }
+                Kind::ExecuteVisible if off_price || in_cross => {
                     if let Some(q) = a.ahead.get_mut(&m.order_id) {
                         *q -= m.size.min(*q);
                         if *q == 0 {
@@ -276,6 +294,9 @@ pub fn replay_passive_with(messages: &[Message], snapshots: Option<&[Snapshot]>,
         }
         active.retain(|a| a.left > 0);
         book.apply(m);
+        if m.kind == Kind::Submit {
+            max_id = max_id.max(m.order_id);
+        }
         if let Some(s) = snapshots.and_then(|s| s.get(j)) {
             if book.top(levels) != *s {
                 book.reconcile(s, levels);
@@ -321,6 +342,8 @@ pub struct LeaveOneOut {
     pub taker_rule: bool,
     /// Filled orders were compared in a counterfactual stream.
     pub counterfactual: bool,
+    /// Every n-th order was compared ([`LooOptions::every`]); 0 when all were.
+    pub every: usize,
     /// What re-matching moved (counterfactual only).
     pub rematched: Rematched,
     /// Model volume by reason: queue, trade-through, taker remainder.
@@ -397,6 +420,10 @@ pub struct LooOptions<'a> {
     /// If not 0, compare only an evenly spaced sample of this many orders that really filled
     /// (by submission order), so that variants can be scored on the same orders cheaply.
     pub sample_filled: usize,
+    /// If above 1 (and `sample_filled` is 0), compare only every n-th order (by submission
+    /// order), to bound the cost on busy days. Copies never interact, so a sample measures the
+    /// same rates. The orders left out before sampling are still counted in full.
+    pub every: usize,
 }
 
 /// Volume the counterfactual moved, over all filled orders.
@@ -590,6 +617,9 @@ pub fn leave_one_out_with(messages: &[Message], from_ns: i64, opt: &LooOptions) 
         let filled: Vec<(i64, PassiveOrder)> = cases.into_iter().filter(|(id, _)| !real[id].fills.is_empty()).collect();
         let step = filled.len().div_ceil(opt.sample_filled).max(1);
         cases = filled.into_iter().step_by(step).collect();
+    } else if opt.every > 1 {
+        cases = cases.into_iter().step_by(opt.every).collect();
+        v.every = opt.every;
     }
     let copies: Vec<PassiveOrder> = cases.iter().map(|c| c.1).collect();
     let base: &[TakerRemainder] = match opt.takers {
@@ -681,6 +711,7 @@ impl LeaveOneOut {
     pub fn absorb(&mut self, o: &LeaveOneOut) {
         self.taker_rule |= o.taker_rule;
         self.counterfactual |= o.counterfactual;
+        self.every = self.every.max(o.every);
         let (r, s) = (&mut self.rematched, o.rematched);
         (r.behind, r.deeper, r.leftover, r.unattributed) = (r.behind + s.behind, r.deeper + s.deeper, r.leftover + s.leftover, r.unattributed + s.unattributed);
         for k in 0..3 {
@@ -724,7 +755,7 @@ impl LeaveOneOut {
         };
         let [queue, through, remainder] = self.volume_by_reason;
         format!(
-            "{{\"taker_rule\":{},\"counterfactual\":{},\"orders\":{},\"left_out\":{{\"before_from\":{},\"gone_within_entry_stamp\":{},\"marketable\":{}}},\
+            "{{\"taker_rule\":{},\"counterfactual\":{},\"every\":{},\"orders\":{},\"left_out\":{{\"before_from\":{},\"gone_within_entry_stamp\":{},\"marketable\":{}}},\
              \"filled_by\":{{\"both\":{},\"exchange_only\":{},\"model_only\":{},\"neither\":{}}},\
              \"first_fill\":{{\"model_earlier\":{},\"same_stamp\":{},\"model_later\":{},\"lag_ns\":{}}},\
              \"overfilled\":{},\"real_volume\":{},\"model_volume\":{},\
@@ -732,6 +763,7 @@ impl LeaveOneOut {
              \"rematched\":{rematched},\"queue_overstated\":{},\"examples\":[{}],\"missed\":[{}]}}",
             self.taker_rule,
             self.counterfactual,
+            self.every,
             self.orders,
             self.before_from,
             self.gone_within_entry_stamp,
@@ -847,6 +879,58 @@ mod tests {
     }
 
     #[test]
+    fn an_order_received_earlier_but_shown_later_ranks_ahead() {
+        // Order 5 rests at 99.00; our copy of order 7 joins behind it. Order 6 was received
+        // before 7 (a lower id) but is shown only later, as Nasdaq shows orders entered before
+        // the open: it ranks ahead of ours. Order 8 was received after 7. When 5 and 6 trade,
+        // that volume was ahead of ours; when 8 trades, it reaches ours.
+        let p = 990_000;
+        let ms = [
+            msg(1, Kind::Submit, 5, 100, p, Side::Buy),
+            msg(2, Kind::Submit, 7, 20, p, Side::Buy),
+            msg(3, Kind::Submit, 6, 50, p, Side::Buy),
+            msg(4, Kind::Submit, 8, 50, p, Side::Buy),
+            msg(5, Kind::ExecuteVisible, 5, 100, p, Side::Buy),
+            msg(6, Kind::ExecuteVisible, 6, 50, p, Side::Buy),
+            msg(7, Kind::ExecuteVisible, 8, 30, p, Side::Buy),
+        ];
+        let r = &replay_passive(&ms, None, 1, &[PassiveOrder { own_order_id: Some(7), ..bid(2, p, 20) }])[0];
+        assert_eq!(r.fills, vec![PassiveFill { ts_ns: 7, size: 20, reason: FillReason::Queue }]);
+        assert_eq!(r.queue_overstated, 0);
+        // A hypothetical order joining at t = 3 compares with the highest id seen by then (7):
+        // order 6, shown at t = 3, is already in its queue, and 8 comes after it.
+        let h = &replay_passive(&ms, None, 1, &[bid(3, p, 20)])[0];
+        assert_eq!((h.queue_ahead, h.fills.first().map(|f| f.ts_ns)), (170, Some(7)));
+    }
+
+    #[test]
+    fn leave_one_out_can_compare_every_nth_order() {
+        let p = 990_000;
+        let ms: Vec<Message> = (0..6i64).map(|k| msg(1 + k, Kind::Submit, 10 + k, 10, p, Side::Buy)).collect();
+        let all = leave_one_out(&ms, 0);
+        let half = leave_one_out_with(&ms, 0, &LooOptions { every: 2, ..LooOptions::default() });
+        assert_eq!((all.orders, half.orders, all.every, half.every), (6, 3, 0, 2));
+        assert!(half.to_json().contains("\"every\":2,\"orders\":3"));
+    }
+
+    #[test]
+    fn executions_stamped_at_a_cross_fill_nothing() {
+        // Our 20 bids at 99.00 with nothing ahead; order 2 joins behind. At t = 5 an auction
+        // trades (the cross row) and order 2 executes 50 in it at 99.00. An auction does not
+        // follow the continuous queue, so that fills nothing, as crosses never do. At t = 6
+        // order 2 trades again in continuous trading, and that volume reaches ours first.
+        let p = 990_000;
+        let ms = [
+            msg(3, Kind::Submit, 2, 100, p, Side::Buy),
+            msg(5, Kind::ExecuteVisible, 2, 50, p, Side::Buy),
+            msg(5, Kind::Cross, 0, 50, p, Side::Buy),
+            msg(6, Kind::ExecuteVisible, 2, 30, p, Side::Buy),
+        ];
+        let r = &replay_passive(&ms, None, 1, &[bid(2, p, 20)])[0];
+        assert_eq!(r.fills, vec![PassiveFill { ts_ns: 6, size: 20, reason: FillReason::Queue }]);
+    }
+
+    #[test]
     fn a_copy_sees_nothing_in_the_stamp_it_was_cancelled_in() {
         // Our 20 bids at 99.00 with nothing ahead and is cancelled at t = 5. Order 2 joins behind
         // it and trades at t = 5. Several messages share a stamp (ITCH stamps tie), and the
@@ -904,7 +988,7 @@ mod tests {
         let cf = leave_one_out_with(&ms, 0, &LooOptions { takers: Some(&info), counterfactual: true, ..LooOptions::default() });
         assert_eq!(cf.rematched, Rematched { behind: 4, deeper: 5, leftover: 1, unattributed: 0 }, "S lies beyond the taker's limit");
         assert_eq!((cf.both, cf.same_stamp, cf.neither, cf.model_volume, cf.volume_by_reason), (1, 1, 3, 9, [4, 5, 0]));
-        let full = leave_one_out_with(&ms, 0, &LooOptions { takers: Some(&info), taker_rule: true, counterfactual: true, sample_filled: 0 });
+        let full = leave_one_out_with(&ms, 0, &LooOptions { takers: Some(&info), taker_rule: true, counterfactual: true, ..LooOptions::default() });
         assert_eq!((full.same_stamp, full.model_volume, full.volume_by_reason, full.overfilled), (1, 10, [4, 5, 1], 0), "the 1 left with the taker reaches O's copy");
         assert!(full.to_json().contains("\"rematched\":{\"behind\":4,\"deeper\":5,\"leftover\":1,\"unattributed\":0}"));
         // A feed that names no taker (ITCH): only Q, behind O at its price, is reachable for

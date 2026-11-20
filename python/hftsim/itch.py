@@ -30,21 +30,29 @@ def decompress(gz: Path) -> Path:
     return raw
 
 
-def check(path: Path, replay: int = 8, levels: int = 10, sample: int = 200, symbols: list[str] | None = None) -> dict:
-    """Run `hftsim itch-check` on an ITCH file (decompressing a `.gz` first)."""
+def day_of(name: str) -> str:
+    """The date in a sample file's name as YYYYMMDD: BX and PSX files start with YYYYMMDD,
+    main-market files with MMDDYYYY."""
+    d = name[:8]
+    return d if d[:2] in ("19", "20") else d[4:] + d[:4]
+
+
+def check(path: Path, replay: int = 8, levels: int = 10, sample: int = 200, symbols: list[str] | None = None, every: int = 1) -> dict:
+    """Run `hftsim itch-check` on an ITCH file (decompressing a `.gz` first). With `every` above
+    1 the all-orders replay check uses every n-th order (busy days). Progress goes to stderr."""
     from .runner import ensure_built
 
     raw = decompress(path) if path.suffix == ".gz" else path
     venue = "Nasdaq BX" if "BX_ITCH" in raw.name else "Nasdaq PSX" if "PSX_ITCH" in raw.name else "Nasdaq"
-    args = [str(ensure_built()), "itch-check", str(raw), "--replay", str(replay), "--levels", str(levels), "--sample", str(sample),
-            "--source", f"{venue} TotalView-ITCH 5.0 sample day from emi.nasdaq.com/ITCH/", "--date", raw.name[:8]]
+    args = [str(ensure_built()), "itch-check", str(raw), "--replay", str(replay), "--levels", str(levels), "--sample", str(sample), "--every", str(every),
+            "--source", f"{venue} TotalView-ITCH 5.0 sample day from emi.nasdaq.com/ITCH/", "--date", day_of(raw.name)]
     if symbols:
         args += ["--symbols", ",".join(symbols)]
     if path != raw:
         args += ["--also", str(path)]
-    proc = subprocess.run(args, capture_output=True, text=True)
+    proc = subprocess.run(args, stdout=subprocess.PIPE, text=True)
     if proc.returncode != 0:
-        raise RuntimeError(f"hftsim itch-check failed: {proc.stderr.strip()}")
+        raise RuntimeError(f"hftsim itch-check failed (exit {proc.returncode}); its messages are above")
     report = json.loads(proc.stdout)
     out = raw.parent / "derived"
     out.mkdir(exist_ok=True)
@@ -63,11 +71,12 @@ def main(argv: list[str] | None = None) -> int:
     c.add_argument("--levels", type=int, default=10)
     c.add_argument("--sample", type=int, default=200, help="filled orders per stock for the counterfactual")
     c.add_argument("--symbols", default="", help="comma-separated symbols instead of the most traded")
+    c.add_argument("--every", type=int, default=1, help="replay every n-th order in the all-orders check (busy days)")
     a = p.parse_args(argv)
     if a.cmd == "decompress":
         print(decompress(a.file))
     else:
-        report = check(a.file, a.replay, a.levels, a.sample, [s for s in a.symbols.split(",") if s])
+        report = check(a.file, a.replay, a.levels, a.sample, [s for s in a.symbols.split(",") if s], a.every)
         print(json.dumps({k: report[k] for k in ("check", "cross_check")}, indent=1))
         print(json.dumps({k: report["replay"][k] for k in ("all_orders", "filled_sample", "filled_sample_counterfactual")}, indent=1))
     return 0

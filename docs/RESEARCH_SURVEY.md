@@ -59,7 +59,8 @@ the primary text. Section D lists the formulas that must be transcribed from the
 | Market orders | CME "market with protection": the order fills only within a protection band around the best opposite price, and the remainder rests as a limit at the band edge [S]. | Not yet: market orders sweep (risk K14) |
 | Auctions | Xetra: maximum executable volume, with the price closest to the reference price as the last resort [S]. Minimum surplus and market pressure as explicit steps were not confirmed. Euronext criteria were not reachable. Nasdaq's opening cross minimises imbalance after maximising volume [S]. | Four-step rule over the tick grid (R7) |
 | Volatility halts | US LULD: 15 s in a limit state triggers a 5-minute pause, reopened by an auction at the listing exchange [S]. Xetra volatility interruption: an extra auction of at least 2 minutes with a **random end** [S]. CME Velocity Logic: a brief "reserved" state, then reopening [S]. | Halts/auctions driven by the session schedule (R8); automatic triggers later |
-| Displayed vs ranked price | Nasdaq and BX Rule 4702(b)(1)(A): a Price to Comply order that would lock or cross a protected quotation is displayed one minimum increment away and ranked at that quotation's price, non-displayed. Post-Only orders that are not attributable are adjusted the same way [V: SEC release 34-79290, fn. 8 and 10; release 34-78909, fn. 8]. On a BX day, every execution at a non-displayed price is one increment toward the other side, and these account for every execution that passed an older displayed order (HISTORICAL_DATA §7). | One venue and no protected quotations, so displayed and ranked prices coincide |
+| Displayed vs ranked price | Nasdaq and BX Rule 4702(b)(1)(A): a Price to Comply order that would lock or cross a protected quotation is displayed one minimum increment away and ranked at that quotation's price, non-displayed. Post-Only orders that are not attributable are adjusted the same way [V: SEC release 34-79290, fn. 8 and 10; release 34-78909, fn. 8]. On BX and Nasdaq's main market (2019-12-30), every printable execution at a non-displayed price is one increment toward the other side. On BX these account for every execution that passed an older displayed order (HISTORICAL_DATA §7). | One venue and no protected quotations, so displayed and ranked prices coincide |
+| Receipt vs display | *Measured, not read in a rule:* on Nasdaq's main market, every execution that passed an older displayed order was of an order with a lower reference number, received earlier and displayed later; by reference number, priority held in every execution at a displayed price (HISTORICAL_DATA §7). | Orders are displayed when accepted, so the two orders coincide |
 
 The random end of Xetra's volatility auction is worth copying in the simulator's session scheduler.
 It exists to stop participants gaming a known uncross time.
@@ -72,8 +73,10 @@ It exists to stop participants gaming a known uncross time.
   layouts are implemented from memory [M] and checked against a real day (Nasdaq BX, 2019-12-30,
   29.2 million messages). Every type's length matches the data's own length prefixes, and the
   book rebuild finds no inconsistency (HISTORICAL_DATA §7). The specification text itself was not
-  read. "Executed with price" (`C`) reports an execution at a price other than the displayed one;
-  on BX these are orders ranked at a non-displayed price (A2, "Displayed vs ranked price").
+  read. "Executed with price" (`C`) reports an execution at a price other than the displayed one.
+  Printable ones are orders ranked at a non-displayed price (A2, "Displayed vs ranked price");
+  non-printable ones stamped at a cross are that auction's executions, whose volume the cross
+  message prints. *Measured on Nasdaq's main market, 2019-12-30,* not read in the specification.
 * **LOBSTER** (Huang & Polak 2011): a message file per day with event types 1 = new limit order,
   2 = partial cancel, 3 = full deletion, 4 = execution of a visible order, 5 = execution of a hidden
   order, 6 = cross trade, 7 = trading halt. Prices are dollars × 10,000 and direction is ±1. An
@@ -272,7 +275,10 @@ from memory; none of the primary texts were re-read.
   Nasdaq rules 4752/4754/4757 text; cross tie-breaks beyond imbalance.
 * BX's rulebook as in force on 2019-12-30. The SEC's 2016 description of Rule 4702(b)(1)(A) was
   read [V], and the data matches it exactly (HISTORICAL_DATA §7), but the rule text of that date
-  was not.
+  was not. Nor was Nasdaq's rule on when orders entered before the open are displayed and how
+  they rank: receipt priority is measured, not read.
+* What makes ITCH executions non-printable outside auctions (4,980 on Nasdaq's main market,
+  2019-12-30).
 * CME Velocity Logic duration and Stop Spike Logic mechanics.
 * Millisecond-level lifetimes of fleeting orders; post-2013 MIDAS cancel rates.
 * LOBSTER's official event table and order-book layout. Since phase 5 they are at secondary-source

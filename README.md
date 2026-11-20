@@ -47,15 +47,17 @@ so far:
     * Adding a taker-remainder rule (Bitstamp publishes takers' orders), scored against history
       rebuilt without each order, finds 292 of 298 and 99.6% of the volume.
     * The check also found and fixed an optimistic trade-through rule.
-  * **a real equity day from Nasdaq's ITCH 5.0 feed** (Nasdaq BX, 2019-12-30: 29.2 million
-    messages, 8,906 stocks). Every consistency check passes, and an independent rebuild agrees
-    after 1.6 million messages. Every execution at a displayed price followed arrival order. The
-    apparent exceptions (0.2%) were orders BX ranks at a better price than it displays (its Price
-    to Comply rule). With two replay rules that came out of this, the replay fill model is never
-    optimistic on 801,154 real orders.
+  * **two real equity venues from Nasdaq's ITCH 5.0 feed** on the same day (2019-12-30): Nasdaq BX
+    (29.2 million messages) and Nasdaq's main market (268.7 million). Every consistency check
+    passes on both, and an independent rebuild agrees with each. Both matched orders by price,
+    then by receipt. The apparent exceptions were orders ranked at a better price than displayed
+    (Price to Comply), or received earlier than displayed. With four replay rules that came out of
+    this, the replay fill model is never optimistic on either day: no false, early or excess fill
+    on 801,154 BX orders and 439,219 main-market orders (every 10th).
 
-  No real LOBSTER file has been validated: LOBSTER's samples now need an academic application.
-  Hybrid replay and the Databento adapter are not built
+  No real LOBSTER file has been validated, and none is needed: LOBSTER sells books rebuilt from
+  Nasdaq's ITCH feed, which the project reads directly from Nasdaq's free sample days. (LOBSTER's
+  samples now need an academic application.) Hybrid replay and the Databento adapter are not built
   ([roadmap](docs/ARCHITECTURE.md#14-roadmap)).
 
 > Results from this simulator are simulation results. No strategy will be described as profitable
@@ -72,8 +74,8 @@ reports with the manifests that reproduce every run. It does not hold:
 * any market data. The Bitstamp recording behind
   [docs/HISTORICAL_DATA.md](docs/HISTORICAL_DATA.md) §6 is not redistributed: Bitstamp's terms
   for its public feed were not checked. `python -I -m hftsim.bitstamp record` records a fresh
-  one, and the same commands then rerun every check on it. The Nasdaq ITCH day of §7 is
-  Nasdaq's public sample file, to be downloaded from Nasdaq.
+  one, and the same commands then rerun every check on it. The Nasdaq ITCH days of §7 are
+  Nasdaq's public sample files, to be downloaded from Nasdaq.
 
 ## What the exchange core does
 
@@ -208,7 +210,7 @@ Generated reports replace the proposed notebooks, and Python-written agents are 
 
 ## Evidence
 
-213 Rust tests pass (`cargo test --offline`), plus one slow acceptance test run with `--ignored`,
+218 Rust tests pass (`cargo test --offline`), plus one slow acceptance test run with `--ignored`,
 and there are no compiler warnings. 27 Python tests pass (`python -m unittest discover -s tests`
 in `python/`). Four of them need the native extension and pyarrow and are skipped without them.
 Details in [docs/TESTING.md](docs/TESTING.md) and [docs/BENCHMARKS.md](docs/BENCHMARKS.md).
@@ -268,21 +270,23 @@ Details in [docs/TESTING.md](docs/TESTING.md) and [docs/BENCHMARKS.md](docs/BENC
   * the replay fill model, run leave-one-out on 172,862 real resting orders in four variants,
     filled none of the 172,564 that never traded, and no order earlier or for more than it
     really filled;
-  * a Nasdaq BX ITCH day (29.2 million messages): each message type's length matches its layout,
-    and the book rebuild finds no unknown or reused reference, stock mismatch, oversize execution,
-    backward timestamp or crossed book. The best 10 levels agree with LOBSTER's independent
-    rebuild after 1,608,422 messages. Every execution at a displayed price was of the oldest order
-    at that price;
-  * the replay fill model, run leave-one-out on 801,154 BX orders, filled none of the 710,970
-    that never traded, and no order earlier or for more than it really filled. That took two
-    corrections the check prompted: executions at a non-displayed price no longer count as the
-    displayed queue trading, and a copy no longer sees the nanosecond its original was cancelled
-    in;
-  * mutation testing: all 47 planted data bugs caught. 24 are in the LOBSTER reader and the
+  * two Nasdaq ITCH venues on 2019-12-30, BX (29.2 million messages) and the main market (268.7
+    million): each message type's length matches its layout, and the book rebuild finds no
+    unknown or reused reference, stock mismatch, oversize execution or backward timestamp. Books
+    cross only while a stock is halted or paused. The best 10 levels agree with LOBSTER's
+    independent rebuild after 1.6 and 8.5 million messages. By reference number, every execution
+    at a displayed price was of the earliest-received order at that price;
+  * the replay fill model, run leave-one-out on 801,154 BX orders and 439,219 main-market orders
+    (every 10th), filled no order that never traded, and no order earlier or for more than it
+    really filled. That took four corrections the checks prompted: executions at a non-displayed
+    price and in auctions no longer count as the displayed queue trading, a copy no longer sees
+    the nanosecond its original was cancelled in, and an order received earlier but displayed
+    later ranks ahead;
+  * mutation testing: all 51 planted data bugs caught. 26 are in the LOBSTER reader and the
     replay model (including its leave-one-out check, taker-remainder rule, counterfactual and the
-    two rules from the ITCH day), two of them only after the test gaps they exposed were closed.
+    four rules from the ITCH days), two of them only after the test gaps they exposed were closed.
     12 are in the order-level check, one of them only by a test added while the mutant was
-    written. 11 are in the ITCH reader, 4 of them caught only by a test written first, because no
+    written. 13 are in the ITCH reader, 3 of them caught only by a test written first, because no
     earlier test made those inconsistencies happen.
 * **Engine performance** (Ryzen AI 7 PRO 350 laptop):
   * about 8.6 M messages/s with ~1,000 resting orders and 2.4 M messages/s with ~190,000;
@@ -412,6 +416,13 @@ stocks (about 3 minutes):
 python -I -m hftsim.itch check ../data/itch/20191230-bx/20191230.BX_ITCH_50.gz --replay 8
 ```
 
+The main market's day (`12302019.NASDAQ_ITCH50.gz`, 3.5 GB) takes about 17 minutes with every
+10th order in the replay check:
+
+```bash
+python -I -m hftsim.itch check ../data/itch/20191230-nasdaq/12302019.NASDAQ_ITCH50.gz --replay 8 --every 10
+```
+
 Scaled fuzzing and mutation testing (PowerShell):
 
 ```powershell
@@ -422,7 +433,7 @@ $env:LOB_FUZZ_SEEDS=1500; $env:LOB_FUZZ_STEPS=4000; cargo test --release --offli
 powershell -File tools\mutation_test.ps1
 ```
 
-(About an hour for all 132 mutants; `-Only lob|sim|agents|mm|metrics|data` or `-Ids A13,S02` for
+(About an hour for all 136 mutants; `-Only lob|sim|agents|mm|metrics|data` or `-Ids A13,S02` for
 a subset.)
 
 ## Layout
@@ -499,7 +510,7 @@ hft-sim/
     ├── MARKET_MAKING.md          formula register and verification, the ladder, the agent, first runs
     ├── METRICS.md                metric definitions, sources, choices, verification
     ├── HISTORICAL_DATA.md        LOBSTER format, reconstruction, provenance, replay fill model,
-    │                             the Bitstamp recording and the Nasdaq BX ITCH day, with their checks
+    │                             the Bitstamp recording and two Nasdaq ITCH days, with their checks
     ├── RESEARCH_RESULTS.md       what the eight research reports show (simulation only)
     ├── RESEARCH_SURVEY.md        matching engines and market-making literature, verification tags
     ├── RISKS.md                  technical risk register

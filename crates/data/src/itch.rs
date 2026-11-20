@@ -21,6 +21,11 @@
 //! executions there arrive as `C` messages ("executed with price"). In LOBSTER form they carry
 //! the price they traded at (the rebuild still reduces the order at its own level), and the
 //! arrival-order check counts them apart, since they trade ahead of the displayed queue by price.
+//!
+//! **Non-printable executions.** A `C` flagged non-printable does not count toward volume. Those
+//! stamped at a cross (`Q`) of the same stock, at its price, are that cross's executions, and
+//! the cross message prints their volume once. All non-printable executions are counted apart,
+//! kept out of the arrival-order check, and written in LOBSTER form at the price they traded at.
 
 use std::collections::{BTreeMap, HashMap, HashSet, VecDeque};
 use std::io::{self, Read};
@@ -217,11 +222,16 @@ pub struct Priority {
     /// Executions at the displayed price of the order at the front of its level (by arrival,
     /// replacements counted as new).
     pub at_front: u64,
-    /// Executions at a price other than the displayed one (`C`), and of those, the ones made
-    /// while an older order was displayed at the same price.
+    /// Printable executions at a price other than the displayed one (`C`), and of those, the
+    /// ones made while an older order was displayed at the same price.
     pub off_display: u64,
     /// See `off_display`.
     pub off_display_ahead_of_older: u64,
+    /// Non-printable executions (left out of the arrival-order check), and of those, the ones
+    /// stamped at a cross (`Q`) of the same stock, at its price: that cross's executions.
+    pub non_printable: u64,
+    /// See `non_printable`.
+    pub non_printable_at_cross: u64,
     /// Executions of an order behind others, by how it came to be: added, replaced at the same
     /// price with fewer shares, replaced at the same price otherwise, replaced at a new price.
     pub jumps: [u64; 4],
@@ -235,6 +245,16 @@ pub struct Priority {
     pub jumper_odd_lot: u64,
     /// See `front_odd_lot`.
     pub both_attributed: u64,
+    /// Jumps where the executed order's reference number is lower than the front order's: the
+    /// exchange received it first (reference numbers are assigned on receipt) but displayed it
+    /// later; and jumps by an order first displayed within a second after the market opened.
+    pub jumps_received_earlier: u64,
+    /// See `jumps_received_earlier`.
+    pub jumps_shown_at_open: u64,
+    /// Executions at the displayed price while a live order at the same level had been received
+    /// earlier (a lower reference number): breaks of priority by receipt, which arrival order
+    /// by display can only approximate.
+    pub out_of_receipt_order: u64,
     /// Up to 20 jumps as JSON, for inspection.
     pub examples: Vec<String>,
 }
@@ -327,8 +347,16 @@ pub struct ItchCheck {
     /// Times a stock's displayed book became crossed or locked, by session: before, during and
     /// after market hours (system events `Q` and `M`).
     pub crossed_episodes: [u64; 3],
-    /// Shares executed visibly (`E`, `C`), against non-displayed orders (`P`), and in crosses (`Q`).
+    /// Of those, episodes that began while the stock's trading state (`H`) was not `T`
+    /// (halted, paused or quotation only: no matching, so a book can cross).
+    pub crossed_while_halted: u64,
+    /// Up to 20 crossed episodes as JSON, for inspection.
+    pub crossed_examples: Vec<String>,
+    /// Shares executed visibly and printable (`E`, `C`), visibly but non-printable (`C`, mostly in
+    /// crosses, whose volume `Q` prints), against non-displayed orders (`P`), and in crosses (`Q`).
     pub executed_shares: u64,
+    /// See `executed_shares`.
+    pub non_printable_shares: u64,
     /// See `executed_shares`.
     pub hidden_shares: u64,
     /// See `executed_shares`.
@@ -355,6 +383,7 @@ pub struct ItchCheck {
 /// the messages in LOBSTER form, checked against an independent rebuild (LOBSTER's
 /// [`Rebuilder`]) after every message: `cross_mismatches` counts the times their best
 /// `levels` levels differed.
+#[derive(Default)]
 pub struct Pass {
     /// The checks.
     pub check: ItchCheck,
@@ -382,6 +411,11 @@ pub fn read_file<R: Read>(reader: R, export: &HashSet<u16>, levels: usize) -> io
     // front; a level's queue goes when the level empties.
     let mut fifo: HashMap<(u16, usize, u32), VecDeque<u64>> = HashMap::new();
     let mut round_lots: HashMap<u16, u32> = HashMap::new();
+    // Non-printable executions and crosses, by stock, time and price, to link them at the end.
+    let mut non_printable: Vec<(u16, i64, u32)> = Vec::new();
+    let mut cross_stamps: HashSet<(u16, i64, u32)> = HashSet::new();
+    // Stocks whose trading state is not `T` (halted, paused, quotation only).
+    let mut halted: HashSet<u16> = HashSet::new();
     while let Some(b) = r.next_message()? {
         c.messages += 1;
         let kind = b[0];
@@ -455,18 +489,34 @@ pub fn read_file<R: Read>(reader: R, export: &HashSet<u16>, levels: usize) -> io
                 if let Some(o) = known(oref, &mut c) {
                     c.oversize += u64::from(shares > o.shares);
                     let take = shares.min(o.shares);
-                    c.executed_shares += u64::from(shares);
+                    let px = if let Itch::ExecutedPrice { price, .. } = rec.msg { price } else { o.price };
+                    // Non-printable executions are reported apart: those in a cross have their
+                    // volume printed once, by the cross message.
+                    let printable = !matches!(rec.msg, Itch::ExecutedPrice { printable: false, .. });
                     let s = c.per_stock.entry(o.locate).or_default();
                     s.executions += 1;
-                    s.executed_shares += u64::from(shares);
-                    let px = if let Itch::ExecutedPrice { price, .. } = rec.msg { price } else { o.price };
+                    if printable {
+                        c.executed_shares += u64::from(shares);
+                        s.executed_shares += u64::from(shares);
+                    } else {
+                        c.non_printable_shares += u64::from(shares);
+                        c.priority.non_printable += 1;
+                        non_printable.push((o.locate, ts, px));
+                    }
                     s.price_range = if s.executions == 1 { (px, px) } else { (s.price_range.0.min(px), s.price_range.1.max(px)) };
-                    let off_display = px != o.price;
+                    let off_display = printable && px != o.price;
                     c.priority.off_display += u64::from(off_display);
-                    // Was it the first order at its level, by arrival?
-                    if let Some(q) = fifo.get_mut(&(o.locate, idx(o.side), o.price)) {
+                    // Was it the first order at its level, by arrival? (Not asked of
+                    // non-printable executions: an auction does not follow the queue.)
+                    if let Some(q) = fifo.get_mut(&(o.locate, idx(o.side), o.price)).filter(|_| printable) {
                         while q.front().is_some_and(|f| orders.get(f).is_none_or(|x| x.price != o.price || x.locate != o.locate)) {
                             q.pop_front();
+                        }
+                        // By receipt (reference numbers are assigned on receipt), was a live
+                        // order at this level received before the executed one?
+                        if !off_display {
+                            let older = q.iter().any(|r| *r < oref && orders.get(r).is_some_and(|x| x.price == o.price && x.locate == o.locate));
+                            c.priority.out_of_receipt_order += u64::from(older);
                         }
                         match q.front() {
                             Some(&f) if f != oref && off_display => c.priority.off_display_ahead_of_older += 1,
@@ -479,6 +529,8 @@ pub fn read_file<R: Read>(reader: R, export: &HashSet<u16>, levels: usize) -> io
                                 pr.front_odd_lot += u64::from(front.shares < lot);
                                 pr.jumper_odd_lot += u64::from(o.shares < lot);
                                 pr.both_attributed += u64::from(front.attributed && o.attributed);
+                                pr.jumps_received_earlier += u64::from(oref < f);
+                                pr.jumps_shown_at_open += u64::from(c.market_open_ns.is_some_and(|t| o.added_ns >= t && o.added_ns < t + 1_000_000_000));
                                 if pr.examples.len() < 20 {
                                     pr.examples.push(format!(
                                         "{{\"stock\":\"{}\",\"ts_ns\":{ts},\"side\":\"{}\",\"price\":{},\"executed\":{shares},\
@@ -561,10 +613,18 @@ pub fn read_file<R: Read>(reader: R, export: &HashSet<u16>, levels: usize) -> io
             }
             Itch::Cross { shares, price, .. } => {
                 c.cross_shares += shares;
+                cross_stamps.insert((rec.locate, ts, price));
                 out.push(Message { ts_ns: ts, kind: Kind::Cross, order_id: 0, size: shares as i64, price: i64::from(price), side: Side::Buy });
             }
             Itch::Broken { .. } => c.broken += 1,
-            Itch::Trading { .. } | Itch::Other => {}
+            Itch::Trading { state, .. } => {
+                if state == b'T' {
+                    halted.remove(&rec.locate);
+                } else {
+                    halted.insert(rec.locate);
+                }
+            }
+            Itch::Other => {}
         }
         c.per_stock.entry(rec.locate).or_default().messages += 1;
         // A level that emptied takes its arrival queue with it.
@@ -577,7 +637,19 @@ pub fn read_file<R: Read>(reader: R, export: &HashSet<u16>, levels: usize) -> io
             if books.get(&l).is_some_and(Levels::crossed) {
                 if crossed.insert(l) {
                     c.crossed_episodes[session] += 1;
-                    c.per_stock.entry(l).or_default().crossed_episodes += 1;
+                    c.crossed_while_halted += u64::from(halted.contains(&l));
+                    let s = c.per_stock.entry(l).or_default();
+                    s.crossed_episodes += 1;
+                    if c.crossed_examples.len() < 20 {
+                        let (bid, ask) = books[&l].best();
+                        c.crossed_examples.push(format!(
+                            "{{\"stock\":\"{}\",\"ts_ns\":{ts},\"session\":{session},\"halted\":{},\"bid\":{},\"ask\":{}}}",
+                            s.symbol,
+                            halted.contains(&l),
+                            bid.unwrap_or(0),
+                            ask.unwrap_or(0)
+                        ));
+                    }
                 }
             } else {
                 crossed.remove(&l);
@@ -598,6 +670,7 @@ pub fn read_file<R: Read>(reader: R, export: &HashSet<u16>, levels: usize) -> io
         }
     }
     c.live_at_end = orders.len();
+    c.priority.non_printable_at_cross = non_printable.iter().filter(|k| cross_stamps.contains(k)).count() as u64;
     if c.first_ns == i64::MIN {
         c.first_ns = 0;
     }
@@ -636,23 +709,28 @@ impl ItchCheck {
         let per = |v: &[u64; 4]| kinds.iter().zip(v).map(|(k, n)| format!("\"{k}\":{n}")).collect::<Vec<_>>().join(",");
         let pr = &self.priority;
         let priority = format!(
-            "{{\"executions_at_front\":{},\"executions_off_display\":{},\"off_display_ahead_of_older\":{},\"queue_jumps\":{{{}}},\"jumps_explained_by_origin\":{{{}}},\
-             \"front_odd_lot\":{},\"jumper_odd_lot\":{},\"both_attributed\":{},\"examples\":[{}]}}",
+            "{{\"executions_at_front\":{},\"executions_off_display\":{},\"off_display_ahead_of_older\":{},\"executions_non_printable\":{},\"non_printable_at_cross\":{},\
+             \"queue_jumps\":{{{}}},\"jumps_explained_by_origin\":{{{}}},\"front_odd_lot\":{},\"jumper_odd_lot\":{},\"both_attributed\":{},\"jumps_received_earlier\":{},\"jumps_shown_at_open\":{},\"out_of_receipt_order\":{},\"examples\":[{}]}}",
             pr.at_front,
             pr.off_display,
             pr.off_display_ahead_of_older,
+            pr.non_printable,
+            pr.non_printable_at_cross,
             per(&pr.jumps),
             per(&pr.explained),
             pr.front_odd_lot,
             pr.jumper_odd_lot,
             pr.both_attributed,
+            pr.jumps_received_earlier,
+            pr.jumps_shown_at_open,
+            pr.out_of_receipt_order,
             pr.examples.join(",")
         );
         format!(
             "{{\"messages\":{},\"by_type\":{{{}}},\"length_mismatches\":{{{lengths}}},\"unknown_types\":{},\"malformed\":{},\"stocks\":{},\
              \"stocks_traded\":{},\"orders_added\":{},\"unknown_refs\":{},\"duplicate_refs\":{},\"locate_mismatches\":{},\"oversize\":{},\
-             \"out_of_order\":{},\"crossed_episodes\":{{\"before_market\":{},\"market_hours\":{},\"after_market\":{}}},\
-             \"shares\":{{\"executed_visible\":{},\"executed_hidden\":{},\"crosses\":{}}},\"broken_trades\":{},\"live_at_end\":{},\"priority\":{priority},\
+             \"out_of_order\":{},\"crossed_episodes\":{{\"before_market\":{},\"market_hours\":{},\"after_market\":{},\"while_halted\":{},\"examples\":[{}]}},\
+             \"shares\":{{\"executed_visible\":{},\"executed_non_printable\":{},\"executed_hidden\":{},\"crosses\":{}}},\"broken_trades\":{},\"live_at_end\":{},\"priority\":{priority},\
              \"first_ns\":{},\"last_ns\":{},\"market_open_ns\":{},\"market_close_ns\":{},\"top_stocks\":[{listed}]}}",
             self.messages,
             chars(&self.by_type),
@@ -669,7 +747,10 @@ impl ItchCheck {
             self.crossed_episodes[0],
             self.crossed_episodes[1],
             self.crossed_episodes[2],
+            self.crossed_while_halted,
+            self.crossed_examples.join(","),
             self.executed_shares,
+            self.non_printable_shares,
             self.hidden_shares,
             self.cross_shares,
             self.broken,
@@ -726,12 +807,26 @@ mod tests {
     }
 
     fn exec_at(locate: u16, ts: u64, oref: u64, shares: u32, m: u64, price: u32) -> Vec<u8> {
+        exec_flagged(locate, ts, oref, shares, m, price, b'Y')
+    }
+
+    fn exec_flagged(locate: u16, ts: u64, oref: u64, shares: u32, m: u64, price: u32, printable: u8) -> Vec<u8> {
         let mut v = header(b'C', locate, ts);
         v.extend_from_slice(&oref.to_be_bytes());
         v.extend_from_slice(&shares.to_be_bytes());
         v.extend_from_slice(&m.to_be_bytes());
-        v.push(b'Y');
+        v.push(printable);
         v.extend_from_slice(&price.to_be_bytes());
+        v
+    }
+
+    fn cross(locate: u16, ts: u64, shares: u64, s: &str, price: u32, m: u64, kind: u8) -> Vec<u8> {
+        let mut v = header(b'Q', locate, ts);
+        v.extend_from_slice(&shares.to_be_bytes());
+        v.extend_from_slice(&sym(s));
+        v.extend_from_slice(&price.to_be_bytes());
+        v.extend_from_slice(&m.to_be_bytes());
+        v.push(kind);
         v
     }
 
@@ -856,6 +951,50 @@ mod tests {
             vec![(Kind::Submit, 1, 100, 1_000_000), (Kind::ExecuteVisible, 1, 40, 1_000_100), (Kind::Submit, 2, 10, 1_000_000), (Kind::ExecuteHidden, 0, 300, 1_000_000)]
         );
         assert_eq!((p.cross_compared, p.cross_mismatches), (3, 0));
+    }
+
+    #[test]
+    fn non_printable_executions_are_counted_apart_and_linked_to_their_cross() {
+        // An opening cross at $100.01 executes 60 of bid 1 and 60 of offer 2 (non-printable C
+        // messages stamped with the cross), and the cross message prints 60. Later bid 1 has a
+        // non-printable execution that no cross explains, and offer 2 a printable one.
+        let msgs = vec![
+            add(1, 10, 1, b'B', 100, "A", 1_000_200),
+            add(1, 20, 2, b'S', 100, "A", 1_000_000),
+            exec_flagged(1, 50, 1, 60, 7, 1_000_100, b'N'),
+            exec_flagged(1, 50, 2, 60, 8, 1_000_100, b'N'),
+            cross(1, 50, 60, "A", 1_000_100, 9, b'O'),
+            exec_flagged(1, 70, 1, 10, 10, 1_000_100, b'N'),
+            exec(1, 80, 2, 10, 11),
+        ];
+        let p = read_file(&file(&msgs)[..], &HashSet::from([1u16]), 10).expect("reads");
+        let c = &p.check;
+        assert_eq!((c.executed_shares, c.non_printable_shares, c.cross_shares), (10, 130, 60), "volume counts the cross once");
+        let pr = &c.priority;
+        assert_eq!((pr.non_printable, pr.non_printable_at_cross), (3, 2));
+        assert_eq!((pr.at_front, pr.off_display, pr.jumps), (1, 0, [0, 0, 0, 0]), "only the printable execution is checked against arrival order");
+        let kinds: Vec<(Kind, i64)> = p.exported[&1].iter().map(|m| (m.kind, m.price)).collect();
+        assert_eq!(kinds[2..5], [(Kind::ExecuteVisible, 1_000_100), (Kind::ExecuteVisible, 1_000_100), (Kind::Cross, 1_000_100)]);
+        assert_eq!((p.cross_compared, p.cross_mismatches), (6, 0));
+    }
+
+    #[test]
+    fn priority_is_checked_by_receipt_too() {
+        // Bids at $100.00: order 10 is shown first, then order 9, received earlier (a lower
+        // reference number) but shown later, as Nasdaq shows orders entered before the open.
+        // Order 9 executes first: a jump by display order, but in receipt order. Then order 12
+        // is shown and executes while 10 still rests: out of receipt order too.
+        let msgs = vec![
+            add(1, 10, 10, b'B', 100, "A", 1_000_000),
+            add(1, 20, 9, b'B', 100, "A", 1_000_000),
+            exec(1, 30, 9, 100, 1),
+            add(1, 40, 12, b'B', 100, "A", 1_000_000),
+            exec(1, 50, 12, 100, 2),
+            exec(1, 60, 10, 100, 3),
+        ];
+        let p = read_file(&file(&msgs)[..], &HashSet::new(), 10).expect("reads");
+        let pr = &p.check.priority;
+        assert_eq!((pr.at_front, pr.jumps[0], pr.jumps_received_earlier, pr.out_of_receipt_order), (1, 2, 1, 1));
     }
 
     #[test]

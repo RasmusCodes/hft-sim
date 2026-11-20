@@ -26,8 +26,8 @@ description: A deterministic exchange, a latency-aware market simulator and a re
 <section class="block" aria-label="Key numbers">
   <div class="stats">
     <div class="stat"><div class="num">8.6 M/s</div><div class="label">messages through the matching engine with ~1,000 resting orders (2.4 M/s with ~190,000)</div></div>
-    <div class="stat"><div class="num">213 + 27</div><div class="label">Rust and Python tests passing, with no compiler warnings</div></div>
-    <div class="stat"><div class="num">130 / 132</div><div class="label">deliberately planted bugs caught by the tests; the other 2 proven unobservable</div></div>
+    <div class="stat"><div class="num">218 + 27</div><div class="label">Rust and Python tests passing, with no compiler warnings</div></div>
+    <div class="stat"><div class="num">134 / 136</div><div class="label">deliberately planted bugs caught by the tests; the other 2 proven unobservable</div></div>
     <div class="stat"><div class="num">1,136 / 1,136</div><div class="label">real Bitstamp order-level snapshots reproduced by the book rebuild</div></div>
   </div>
 </section>
@@ -91,10 +91,10 @@ description: A deterministic exchange, a latency-aware market simulator and a re
     </div>
     <div class="card">
       <h3>Historical data</h3>
-      <p>A LOBSTER adapter and a Nasdaq ITCH 5.0 reader. Real order-level data recorded from
-      Bitstamp's public feed, checked order by order against the exchange's own snapshots; a full
-      Nasdaq BX equity day rebuilt without an inconsistency; a replay fill model checked against
-      real fills on both.</p>
+      <p>A Nasdaq ITCH 5.0 reader and a LOBSTER adapter. Real order-level data recorded from
+      Bitstamp's public feed, checked order by order against the exchange's own snapshots; two
+      Nasdaq venues' full equity day rebuilt without an inconsistency; a replay fill model checked
+      against real fills on all three.</p>
       <a class="more" href="docs/HISTORICAL_DATA.html">Historical data →</a>
     </div>
   </div>
@@ -123,13 +123,13 @@ description: A deterministic exchange, a latency-aware market simulator and a re
     </div>
     <div class="panel">
       <p class="tag">Historical stage · phase 5</p>
-      <h3>Real order-level data: Bitstamp BTC/USD and a Nasdaq BX equity day</h3>
+      <h3>Real order-level data: Bitstamp BTC/USD and two Nasdaq venues</h3>
       <ul>
         <li>Bitstamp, 19 minutes: the book rebuilt from 365,180 order events reproduces all 1,136 of the exchange's own order-level snapshots. Broken copies of the data are caught down to one satoshi on one order.</li>
         <li>Run leave-one-out on 172,862 real resting orders, the replay fill model never filled an order the exchange left unfilled, nor one earlier or for more. With the takers' published orders, and history rebuilt without each order, it recovers 292 of 298 real fills at the right millisecond and 99.6% of the volume.</li>
         <li>The same check found an optimistic trade-through rule in the model, and it was fixed.</li>
-        <li>Nasdaq BX, 30 December 2019: 29.2 million ITCH messages for 8,906 stocks rebuild without a single inconsistency. For the 8 most-traded stocks, the best 10 levels agree with an independent rebuild after all 1.6 million book changes.</li>
-        <li>On BX, every execution at a displayed price was of the oldest order at that price. The apparent exceptions were orders BX ranks at a better price than it displays. Run leave-one-out on 801,154 BX orders, the replay model made no false, early or excess fill, after two corrections the check itself prompted.</li>
+        <li>Nasdaq BX and Nasdaq's main market, 30 December 2019: 29.2 and 268.7 million ITCH messages rebuild without a single inconsistency. For each day's 8 most-traded stocks, the best 10 levels agree with an independent rebuild after all 10 million book changes.</li>
+        <li>Both venues matched orders by price, then by receipt. The apparent queue jumps were orders ranked at a better price than displayed, or received earlier than displayed. Run leave-one-out on 1.24 million real orders, the replay model made no false, early or excess fill, after four corrections the checks themselves prompted.</li>
       </ul>
       <p class="note">Two venues, one window each. <a href="docs/HISTORICAL_DATA.html">Read the details →</a></p>
     </div>
@@ -141,10 +141,10 @@ description: A deterministic exchange, a latency-aware market simulator and a re
   <ul class="checks">
     <li><b>Hand-computed scenarios.</b> 52 rulebook cases with exact expected events.</li>
     <li><b>Differential fuzzing.</b> The engine against an independent naive implementation, cross-checked after every command.</li>
-    <li><b>Mutation testing.</b> Bugs planted one at a time in every crate. The tests caught 130 of 132; the other 2 cannot change behaviour.</li>
+    <li><b>Mutation testing.</b> Bugs planted one at a time in every crate. The tests caught 134 of 136; the other 2 cannot change behaviour.</li>
     <li><b>Reproducibility.</b> Golden digests of the event stream: the same seed gives the same run, bit for bit.</li>
     <li><b>Accounting identities.</b> Every agent's PnL decomposition equals its exchange ledger to the last fee unit.</li>
-    <li><b>Ground truth.</b> The replay fill model is checked against the exchange's own fills in the simulator, and against real orders on Bitstamp and Nasdaq BX.</li>
+    <li><b>Ground truth.</b> The replay fill model is checked against the exchange's own fills in the simulator, and against real orders on Bitstamp and two Nasdaq venues.</li>
   </ul>
 </section>
 

@@ -81,9 +81,10 @@ fn itch_check(args: &[String]) -> Result<String, String> {
     use data::provenance::{DataLevel, Provenance, file_info};
     use data::replay::{LeaveOneOut, LooOptions, TakerInfo, leave_one_out, leave_one_out_with};
     use std::collections::HashSet;
-    let usage = "usage: hftsim itch-check FILE [--replay 8] [--symbols A,B] [--levels 10] [--sample 200] [--source TEXT] [--date D] [--also FILE ...]";
+    let usage = "usage: hftsim itch-check FILE [--replay 8] [--symbols A,B] [--levels 10] [--sample 200] [--every 1] [--source TEXT] [--date D] [--also FILE ...]";
     let (path, rest) = args.split_first().ok_or(usage)?;
     let (mut replay, mut levels, mut sample, mut symbols) = (8usize, 10usize, 200usize, Vec::<String>::new());
+    let mut every = 1usize;
     let (mut source, mut date, mut also) = ("Nasdaq TotalView-ITCH 5.0 file".to_string(), "unknown".to_string(), Vec::new());
     let mut k = 0;
     while k < rest.len() {
@@ -93,6 +94,7 @@ fn itch_check(args: &[String]) -> Result<String, String> {
             "--replay" => replay = num(val, "--replay")?,
             "--levels" => levels = num(val, "--levels")?,
             "--sample" => sample = num(val, "--sample")?,
+            "--every" => every = num(val, "--every")?,
             "--symbols" => symbols = val.split(',').map(|s| s.trim().to_string()).filter(|s| !s.is_empty()).collect(),
             "--source" => source = val.clone(),
             "--date" => date = val.clone(),
@@ -102,15 +104,20 @@ fn itch_check(args: &[String]) -> Result<String, String> {
         k += 2;
     }
     let open = || std::fs::File::open(path).map(|f| std::io::BufReader::with_capacity(1 << 22, f)).map_err(|e| format!("cannot read {path}: {e}"));
+    let t0 = std::time::Instant::now();
+    let progress = |what: String| eprintln!("[{:>6.0} s] {what}", t0.elapsed().as_secs_f64());
     // Pass 1: every stock's book and every check.
     let first = read_file(open()?, &HashSet::new(), levels).map_err(|e| format!("{path}: {e}"))?;
+    progress(format!("pass 1: {} messages checked", first.check.messages));
     let chosen: Vec<u16> = if symbols.is_empty() {
         first.check.most_traded(replay)
     } else {
         symbols.iter().map(|s| first.check.per_stock.iter().find(|(_, st)| &st.symbol == s).map(|(&l, _)| l).ok_or_else(|| format!("no stock {s} in {path}"))).collect::<Result<_, _>>()?
     };
     // Pass 2: the chosen stocks in LOBSTER form, checked against LOBSTER's own rebuild.
-    let second = read_file(open()?, &chosen.iter().copied().collect(), levels).map_err(|e| format!("{path}: {e}"))?;
+    // (Skipped with --replay 0: the checks alone.)
+    let second = if chosen.is_empty() { data::itch::Pass::default() } else { read_file(open()?, &chosen.iter().copied().collect(), levels).map_err(|e| format!("{path}: {e}"))? };
+    progress(format!("pass 2: {} stocks in LOBSTER form, {} comparisons with LOBSTER's rebuild", chosen.len(), second.cross_compared));
     let (mut total, mut sample_naive, mut sample_cf) = (LeaveOneOut::default(), LeaveOneOut::default(), LeaveOneOut::default());
     let mut per_stock = Vec::new();
     for l in &chosen {
@@ -118,9 +125,11 @@ fn itch_check(args: &[String]) -> Result<String, String> {
         let name = &first.check.per_stock[l].symbol;
         let executions = msgs.iter().filter(|m| m.kind == data::lobster::Kind::ExecuteVisible).count();
         let blind = TakerInfo { fill_takers: vec![0; executions], ..TakerInfo::default() };
-        let all = leave_one_out(msgs, 0);
+        let all = if every > 1 { leave_one_out_with(msgs, 0, &LooOptions { every, ..LooOptions::default() }) } else { leave_one_out(msgs, 0) };
+        progress(format!("{name}: {} messages, {} orders replayed", msgs.len(), all.orders));
         let naive = leave_one_out_with(msgs, 0, &LooOptions { sample_filled: sample, ..LooOptions::default() });
         let cf = leave_one_out_with(msgs, 0, &LooOptions { takers: Some(&blind), counterfactual: true, sample_filled: sample, ..LooOptions::default() });
+        progress(format!("{name}: filled sample of {} orders, with and without the counterfactual", naive.orders));
         per_stock.push(format!("{{\"symbol\":\"{name}\",\"messages\":{},\"all_orders\":{},\"filled_sample\":{},\"filled_sample_counterfactual\":{}}}", msgs.len(), all.to_json(), naive.to_json(), cf.to_json()));
         total.absorb(&all);
         sample_naive.absorb(&naive);
@@ -189,7 +198,7 @@ fn replay_truth(args: &[String]) -> Result<String, String> {
             if info.fill_takers.len() != executions {
                 return Err(format!("{f}: {} fills for {executions} executions in {path}", info.fill_takers.len()));
             }
-            let run = |taker_rule, counterfactual| data::replay::leave_one_out_with(&messages, from_ns, &data::replay::LooOptions { takers: Some(&info), taker_rule, counterfactual, sample_filled: 0 }).to_json();
+            let run = |taker_rule, counterfactual| data::replay::leave_one_out_with(&messages, from_ns, &data::replay::LooOptions { takers: Some(&info), taker_rule, counterfactual, ..Default::default() }).to_json();
             also.extend([t.clone(), f.clone()]);
             format!(",\"variants\":{{\"taker_rule\":{},\"counterfactual\":{},\"counterfactual_taker_rule\":{}}}", run(true, false), run(false, true), run(true, true))
         }

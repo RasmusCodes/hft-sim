@@ -139,7 +139,9 @@ $mutants = @(
   @('D20', 'data', $DR, 'if !reaches || o.entry_ns >= tk.ts_ns ||', 'if !reaches || o.entry_ns > tk.ts_ns ||', 'an order entered in the taker''s own stamp gets its remainder'),
   @('D21', 'data', $DR, 'Side::Buy => l.price < m.price && l.price >= limit,', 'Side::Buy => l.price < m.price,', 'the counterfactual re-matches bids beyond the taker''s limit'),
   @('D22', 'data', $DR, 'extra.push(TakerRemainder { ts_ns: ts, id: taker, side, limit, available: left });', 'let _ = (ts, taker, side, limit);', 'the counterfactual drops what stays with the taker'),
-  @('D23', 'data', $DR, 'Kind::ExecuteVisible if off_price => {', 'Kind::ExecuteVisible if off_price && false => {', 'an execution away from the order''s own price is read as one at it'),
+  @('D23', 'data', $DR, 'Kind::ExecuteVisible if off_price || in_cross => {', 'Kind::ExecuteVisible if in_cross => {', 'an execution away from the order''s own price is read as one at it'),
+  @('D26', 'data', $DR, 'Kind::Submit if m.price == o.price && m.order_id < a.ref_id => {', 'Kind::Submit if m.price == o.price && m.order_id < a.ref_id && false => {', 'an order received earlier but shown later is ranked behind'),
+  @('D25', 'data', $DR, 'let in_cross = m.kind == Kind::ExecuteVisible && cross_stamps.contains(&m.ts_ns);', 'let in_cross = false && cross_stamps.contains(&m.ts_ns);', 'executions stamped at a cross fill copies'),
   @('D24', 'data', $DR, 'Some(x) if x <= m.ts_ns => {', 'Some(x) if x < m.ts_ns => {', 'a copy still sees the stamp it was cancelled in'),
   @('L01', 'data', $D3, 'Side::Buy => (-price, id),', 'Side::Buy => (price, id),', 'L3 bids ranked worst first'),
   @('L02', 'data', $D3, 'is_none_or(|l| l.created.is_none() && l.first >= j)', 'is_none_or(|l| l.first >= j)', 'a snapshot may reveal an order the stream creates later'),
@@ -163,7 +165,9 @@ $mutants = @(
   @('I08', 'data', $DI, 'c.locate_mismatches += u64::from(o.locate != rec.locate);', 'c.locate_mismatches += u64::from(o.locate != o.locate);', 'an execution under another stock is not flagged'),
   @('I09', 'data', $DI, 'c.out_of_order += u64::from(rec.ts_ns < last_ts);', 'c.out_of_order += u64::from(rec.ts_ns < c.first_ns);', 'timestamps compared with the first, not the latest'),
   @('I10', 'data', $DI, 'if orders.insert(oref, order).is_some() {', 'if orders.insert(oref, order).is_some() && false {', 'duplicate order references never counted'),
-  @('I11', 'data', $DI, 'Some(&f) if f != oref && off_display => c.priority.off_display_ahead_of_older += 1,', 'Some(&f) if f != oref && off_display && false => c.priority.off_display_ahead_of_older += 1,', 'executions at a non-displayed price counted as queue jumps')
+  @('I11', 'data', $DI, 'Some(&f) if f != oref && off_display => c.priority.off_display_ahead_of_older += 1,', 'Some(&f) if f != oref && off_display && false => c.priority.off_display_ahead_of_older += 1,', 'executions at a non-displayed price counted as queue jumps'),
+  @('I12', 'data', $DI, 'let printable = !matches!(rec.msg, Itch::ExecutedPrice { printable: false, .. });', 'let printable = true;', 'non-printable executions counted as printable'),
+  @('I13', 'data', $DI, 'let older = q.iter().any(|r| *r < oref && ', 'let older = q.iter().any(|r| *r <= oref && ', 'the receipt-order check counts the executed order itself')
 )
 
 $summary = @()

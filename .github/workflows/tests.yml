@@ -1,0 +1,30 @@
+name: tests
+
+on:
+  push:
+  pull_request:
+
+jobs:
+  rust:
+    name: Rust workspace
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+      - name: Toolchain
+        run: rustup toolchain install stable --profile minimal && rustup default stable
+      - name: Tests
+        run: cargo test --workspace --quiet
+
+  python:
+    name: Python layer
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+      - uses: actions/setup-python@v7
+        with:
+          python-version: "3.12"
+      - name: Toolchain
+        run: rustup toolchain install stable --profile minimal && rustup default stable
+      - name: Tests (build the release binary and run scenarios; native-extension tests skip without it)
+        working-directory: python
+        run: python -m unittest discover -s tests
